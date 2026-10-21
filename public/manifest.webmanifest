@@ -1,0 +1,9 @@
+{
+  "name": "Amiti’s",
+  "short_name": "Amiti’s",
+  "description": "Tasks, calendar and food",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#faf6ef",
+  "theme_color": "#faf6ef"
+}

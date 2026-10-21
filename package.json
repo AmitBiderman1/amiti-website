@@ -1,0 +1,15 @@
+{
+  "name": "amitis",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "wrangler dev",
+    "db:local": "wrangler d1 execute amitis --local --file=schema.sql",
+    "db:remote": "wrangler d1 execute amitis --remote --file=schema.sql",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

@@ -1,0 +1,540 @@
+// Amiti's: Cloudflare Worker (API + static assets) backed by D1.
+// Every request is checked against the Cloudflare Access login before anything is served.
+
+const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
+const json = (obj, status = 200, extra = {}) =>
+  new Response(JSON.stringify(obj), { status, headers: { ...JSON_HEADERS, ...extra } });
+const fail = (status, error, code) => json({ error, code }, status);
+
+/* ---------- Cloudflare Access (JWT) verification ---------- */
+
+let certCache = { at: 0, keys: null, domain: '' };
+
+function b64uToBytes(s) {
+  s = s.replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+const b64uToJson = (s) => JSON.parse(new TextDecoder().decode(b64uToBytes(s)));
+
+async function accessCerts(domain) {
+  if (certCache.keys && certCache.domain === domain && Date.now() - certCache.at < 3600_000) return certCache.keys;
+  const r = await fetch(`https://${domain}/cdn-cgi/access/certs`);
+  if (!r.ok) throw new Error('certs');
+  const j = await r.json();
+  certCache = { at: Date.now(), keys: j.keys || [], domain };
+  return certCache.keys;
+}
+
+async function verifyAccessJwt(token, env) {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [h, p, sig] = parts;
+  let header, payload;
+  try { header = b64uToJson(h); payload = b64uToJson(p); } catch { return null; }
+  const auds = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  if (!auds.includes(env.ACCESS_AUD)) return null;
+  if (payload.iss !== `https://${env.TEAM_DOMAIN}`) return null;
+  if (!payload.exp || payload.exp * 1000 < Date.now()) return null;
+  const keys = await accessCerts(env.TEAM_DOMAIN);
+  const jwk = keys.find((k) => k.kid === header.kid);
+  if (!jwk) return null;
+  const key = await crypto.subtle.importKey('jwk', jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+  const ok = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, b64uToBytes(sig), new TextEncoder().encode(`${h}.${p}`));
+  if (!ok) return null;
+  return String(payload.email || payload.sub || '').toLowerCase() || null;
+}
+
+// Returns the owner id (the signed-in email), or a Response to send back.
+async function authenticate(req, env, url) {
+  if (env.TEAM_DOMAIN && env.ACCESS_AUD) {
+    const token = req.headers.get('Cf-Access-Jwt-Assertion');
+    if (!token) return new Response('Sign-in required.', { status: 401 });
+    try {
+      const owner = await verifyAccessJwt(token, env);
+      if (owner) return owner;
+    } catch { /* fall through */ }
+    return new Response('Sign-in required.', { status: 401 });
+  }
+  if (pwMode(env)) {
+    if (await sessionOk(req, env)) return 'owner';
+    if (url.pathname.startsWith('/api/')) return fail(401, 'Sign-in required', 'unauthorised');
+    return new Response(null, { status: 302, headers: { location: '/login', 'cache-control': 'no-store' } });
+  }
+  // Not configured yet: only allow local development.
+  if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') return 'local';
+  return new Response(
+    'Amiti’s is not protected yet. Set APP_PASSWORD (or TEAM_DOMAIN and ACCESS_AUD), see the README, then redeploy.',
+    { status: 503 }
+  );
+}
+
+/* ---------- Password login (free alternative to Cloudflare Access) ---------- */
+
+const enc = new TextEncoder();
+const pwMode = (env) => !!(env.APP_PASSWORD && env.APP_PASSWORD.length >= 10);
+
+async function hmacHex(key, msg) {
+  const k = await crypto.subtle.importKey('raw', enc.encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', k, enc.encode(msg));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+function safeEq(a, b) {
+  if (a.length !== b.length) return false;
+  let r = 0;
+  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
+}
+async function sessionOk(req, env) {
+  const [exp, sig] = cookie(req, 'amitis_s').split('.');
+  if (!exp || !sig || !(Number(exp) > Date.now())) return false;
+  return safeEq(sig, await hmacHex(env.APP_PASSWORD, 's:' + exp));
+}
+const LOGIN_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Amiti’s</title><style>
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#faf6ef;color:#3a2b21;font:16px system-ui,sans-serif}
+form{background:#fffdf9;border:1px solid #e8dccb;border-radius:16px;padding:24px;width:min(340px,90vw);display:grid;gap:12px}
+h1{margin:0;font:700 1.6rem Georgia,serif}input,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #e8dccb}
+button{background:#8a5a3b;color:#fff;border-color:#8a5a3b;cursor:pointer;font-weight:600}p{margin:0;color:#c4573f;min-height:1.2em;font-size:.9rem}
+</style></head><body><form id="f"><h1>Amiti’s</h1><input id="p" type="password" placeholder="Password" autocomplete="current-password" required autofocus><button>Sign in</button><p id="m" role="status"></p></form>
+<script>document.getElementById('f').onsubmit=function(e){e.preventDefault();var m=document.getElementById('m');m.textContent='';
+fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:document.getElementById('p').value})})
+.then(function(r){if(r.ok){location.href='/'}else{m.textContent=r.status===429?'Too many attempts. Try again in 15 minutes.':'Wrong password.'}}).catch(function(){m.textContent='Network error.'})}</script></body></html>`;
+
+async function handleLogin(req, env) {
+  const key = 'login_fail';
+  const rec = (await getSetting(env, 'owner', key)) || '0:0';
+  let [count, at] = rec.split(':').map(Number);
+  if (count >= 10 && Date.now() - at < 15 * 60000) return fail(429, 'Too many attempts', 'rate_limited');
+  if (Date.now() - at >= 15 * 60000) count = 0;
+  let b;
+  try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
+  const given = await hmacHex('cmp', String(b.password ?? ''));
+  const real = await hmacHex('cmp', env.APP_PASSWORD);
+  if (!safeEq(given, real)) {
+    await setSetting(env, 'owner', key, `${count + 1}:${Date.now()}`);
+    return fail(401, 'Wrong password', 'unauthorised');
+  }
+  await delSetting(env, 'owner', key);
+  const exp = Date.now() + 30 * 86400000;
+  const sig = await hmacHex(env.APP_PASSWORD, 's:' + exp);
+  return json({ ok: true }, 200, {
+    'set-cookie': `amitis_s=${exp}.${sig}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000`,
+  });
+}
+
+/* ---------- helpers ---------- */
+
+const RE_ID = /^[A-Za-z0-9._-]{1,40}$/;
+const RE_DAY = /^\d{4}-\d{2}-\d{2}$/;
+const RE_DT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+const str = (v, n) => String(v ?? '').slice(0, n);
+const num = (v, min, max, def) => {
+  const x = Number(v);
+  return Number.isFinite(x) ? Math.min(max, Math.max(min, x)) : def;
+};
+const bit = (v) => (v ? 1 : 0);
+const dt = (v) => (typeof v === 'string' && (v === '' || RE_DT.test(v)) ? v : '');
+const TAGS = ['home', 'mil', 'priv', 'fam'];
+const SLOTS = ['breakfast', 'lunch', 'dinner', 'snack'];
+
+async function getSetting(env, owner, key) {
+  const r = await env.DB.prepare('SELECT value FROM settings WHERE owner=? AND key=?').bind(owner, key).first();
+  return r ? r.value : null;
+}
+const setSetting = (env, owner, key, value) =>
+  env.DB.prepare(
+    'INSERT INTO settings(owner,key,value) VALUES(?,?,?) ON CONFLICT(owner,key) DO UPDATE SET value=excluded.value'
+  ).bind(owner, key, value).run();
+const delSetting = (env, owner, key) =>
+  env.DB.prepare('DELETE FROM settings WHERE owner=? AND key=?').bind(owner, key).run();
+
+/* ---------- state + sync ---------- */
+
+async function getState(env, owner) {
+  const cutoff = new Date(Date.now() - 120 * 86400000).toISOString().slice(0, 10);
+  const [t, f, m, goal] = await Promise.all([
+    env.DB.prepare('SELECT id,text,due,dur,snooze,fired,tag,urgent,important,done,gcal FROM tasks WHERE owner=?').bind(owner).all(),
+    env.DB.prepare('SELECT id,day,slot,name,kcal,p,c,f FROM food WHERE owner=? AND day>=?').bind(owner, cutoff).all(),
+    env.DB.prepare('SELECT id,name,servings,ing FROM meals WHERE owner=?').bind(owner).all(),
+    getSetting(env, owner, 'goal'),
+  ]);
+  return {
+    tasks: t.results.map((r) => ({ ...r, urgent: !!r.urgent, important: !!r.important, done: !!r.done, gcal: !!r.gcal })),
+    food: f.results,
+    meals: m.results.map((r) => {
+      let ing = [];
+      try { ing = JSON.parse(r.ing); } catch { /* ignore */ }
+      return { id: r.id, name: r.name, servings: r.servings, ing };
+    }),
+    goal: Number(goal) > 0 ? Number(goal) : 2000,
+  };
+}
+
+async function applySync(env, owner, b) {
+  const db = env.DB;
+  const stmts = [];
+  const now = new Date().toISOString();
+  const list = (x, n = 500) => (Array.isArray(x) ? x.slice(0, n) : []);
+
+  for (const t of list(b.tasks?.upsert)) {
+    if (!t || !RE_ID.test(String(t.id))) continue;
+    const text = str(t.text, 200).trim();
+    if (!text) continue;
+    stmts.push(
+      db.prepare(
+        `INSERT INTO tasks(owner,id,text,due,dur,snooze,fired,tag,urgent,important,done,gcal,updated)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(owner,id) DO UPDATE SET text=excluded.text,due=excluded.due,dur=excluded.dur,snooze=excluded.snooze,
+           fired=excluded.fired,tag=excluded.tag,urgent=excluded.urgent,important=excluded.important,done=excluded.done,
+           gcal=excluded.gcal,updated=excluded.updated`
+      ).bind(
+        owner, String(t.id), text, dt(t.due), Math.round(num(t.dur, 5, 1440, 30)), dt(t.snooze), dt(t.fired),
+        TAGS.includes(t.tag) ? t.tag : 'priv', bit(t.urgent), bit(t.important), bit(t.done), bit(t.gcal), now
+      )
+    );
+  }
+  for (const id of list(b.tasks?.del)) {
+    if (RE_ID.test(String(id))) stmts.push(db.prepare('DELETE FROM tasks WHERE owner=? AND id=?').bind(owner, String(id)));
+  }
+
+  for (const e of list(b.food?.upsert)) {
+    if (!e || !RE_ID.test(String(e.id)) || !RE_DAY.test(String(e.day))) continue;
+    stmts.push(
+      db.prepare(
+        `INSERT INTO food(owner,id,day,slot,name,kcal,p,c,f) VALUES(?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(owner,id) DO UPDATE SET day=excluded.day,slot=excluded.slot,name=excluded.name,kcal=excluded.kcal,
+           p=excluded.p,c=excluded.c,f=excluded.f`
+      ).bind(
+        owner, String(e.id), e.day, SLOTS.includes(e.slot) ? e.slot : 'snack', str(e.name, 120) || 'Food',
+        Math.round(num(e.kcal, 0, 20000, 0)), num(e.p, 0, 2000, 0), num(e.c, 0, 2000, 0), num(e.f, 0, 2000, 0)
+      )
+    );
+  }
+  for (const id of list(b.food?.del)) {
+    if (RE_ID.test(String(id))) stmts.push(db.prepare('DELETE FROM food WHERE owner=? AND id=?').bind(owner, String(id)));
+  }
+
+  for (const m of list(b.meals?.upsert, 200)) {
+    if (!m || !RE_ID.test(String(m.id))) continue;
+    const name = str(m.name, 80).trim();
+    if (!name) continue;
+    const ing = (Array.isArray(m.ing) ? m.ing : []).slice(0, 60).map((i) => ({
+      n: str(i && i.n, 120), k: num(i && i.k, 0, 50000, 0), p: num(i && i.p, 0, 5000, 0),
+      c: num(i && i.c, 0, 5000, 0), f: num(i && i.f, 0, 5000, 0),
+    }));
+    stmts.push(
+      db.prepare(
+        `INSERT INTO meals(owner,id,name,servings,ing) VALUES(?,?,?,?,?)
+         ON CONFLICT(owner,id) DO UPDATE SET name=excluded.name,servings=excluded.servings,ing=excluded.ing`
+      ).bind(owner, String(m.id), name, num(m.servings, 0.25, 1000, 1), JSON.stringify(ing))
+    );
+  }
+  for (const id of list(b.meals?.del, 200)) {
+    if (RE_ID.test(String(id))) stmts.push(db.prepare('DELETE FROM meals WHERE owner=? AND id=?').bind(owner, String(id)));
+  }
+
+  if (b.goal !== undefined) {
+    const g = Math.round(num(b.goal, 500, 10000, 2000));
+    stmts.push(
+      db.prepare('INSERT INTO settings(owner,key,value) VALUES(?,?,?) ON CONFLICT(owner,key) DO UPDATE SET value=excluded.value')
+        .bind(owner, 'goal', String(g))
+    );
+  }
+
+  // D1 batches run as one transaction; keep chunks modest.
+  for (let i = 0; i < stmts.length; i += 90) await db.batch(stmts.slice(i, i + 90));
+  return stmts.length;
+}
+
+/* ---------- Claude (Anthropic API) proxy ---------- */
+
+const aiEnabled = (env) => !!(env.ANTHROPIC_API_KEY || env.AI);
+
+async function handleAi(req, env) {
+  if (!aiEnabled(env)) return fail(503, 'AI is not configured', 'ai_config');
+  let b;
+  try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
+  if (!Array.isArray(b.messages) || !b.messages.length || b.messages.length > 20) return fail(400, 'Bad messages', 'bad_request');
+
+  const merged = [];
+  let chars = 0;
+  for (const m of b.messages) {
+    if (!m || (m.role !== 'user' && m.role !== 'assistant') || typeof m.content !== 'string' || !m.content) {
+      return fail(400, 'Bad messages', 'bad_request');
+    }
+    chars += m.content.length;
+    const last = merged[merged.length - 1];
+    if (last && last.role === m.role) last.content += '\n\n' + m.content;
+    else merged.push({ role: m.role, content: m.content });
+  }
+  if (chars > 120000 || merged[0].role !== 'user' || merged[merged.length - 1].role !== 'user') {
+    return fail(400, 'Bad messages', 'bad_request');
+  }
+  const images = (Array.isArray(b.images) ? b.images : []).slice(0, 1);
+  const okTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+  for (const im of images) {
+    if (!im || !okTypes.includes(im.media_type) || typeof im.data !== 'string' || im.data.length > 7_000_000) {
+      return fail(400, 'Bad image', 'image_rejected');
+    }
+  }
+  return env.ANTHROPIC_API_KEY ? aiClaude(env, merged, images) : aiWorkers(env, merged, images);
+}
+
+async function aiClaude(env, merged, images) {
+  const blocks = images.map((im) => ({ type: 'image', source: { type: 'base64', media_type: im.media_type, data: im.data } }));
+  blocks.push({ type: 'text', text: merged[merged.length - 1].content });
+  const messages = merged.map((m, i) => (i === merged.length - 1 ? { role: 'user', content: blocks } : m));
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: env.AI_MODEL || 'claude-sonnet-5-5', max_tokens: 2048, messages }),
+  });
+  if (r.status === 429) return fail(429, 'Rate limited', 'rate_limited');
+  if (r.status === 401 || r.status === 403) return fail(502, 'AI key rejected', 'ai_config');
+  if (!r.ok) return fail(502, 'AI request failed', 'upstream_error');
+  const j = await r.json();
+  const text = (j.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('');
+  return json({ text, truncated: j.stop_reason === 'max_tokens' });
+}
+
+// Free option: Cloudflare Workers AI (daily free allowance, no card needed).
+async function aiWorkers(env, merged, images) {
+  try {
+    let out;
+    if (images.length) {
+      const bin = atob(images[0].data);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const prompt = merged.map((m) => (m.role === 'user' ? 'User: ' : 'Assistant: ') + m.content).join('\n\n').slice(-6000);
+      out = await env.AI.run(env.AI_VISION_MODEL || '@cf/llava-hf/llava-1.5-7b-hf', { prompt, image: Array.from(bytes), max_tokens: 1024 });
+    } else {
+      out = await env.AI.run(env.AI_TEXT_MODEL || '@cf/meta/llama-3.1-8b-instruct', { messages: merged, max_tokens: 1500 });
+    }
+    const text = String(out?.response ?? out?.description ?? out?.choices?.[0]?.message?.content ?? '');
+    if (!text) return fail(502, 'Empty AI answer', 'upstream_error');
+    return json({ text, truncated: false });
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    console.error('workers ai error', msg);
+    if (/limit|quota|neuron|429/i.test(msg)) return fail(429, 'Free daily AI limit reached', 'rate_limited');
+    return fail(502, 'AI request failed', 'upstream_error');
+  }
+}
+
+/* ---------- Google Calendar (OAuth + API) ---------- */
+
+const G_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+const gConfigured = (env) => !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+
+function cookie(req, name) {
+  const m = (req.headers.get('cookie') || '').match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+  return m ? decodeURIComponent(m[1]) : '';
+}
+
+async function googleConnect(req, env, url) {
+  if (!gConfigured(env)) return fail(503, 'Google is not configured', 'gcal_config');
+  const state = crypto.randomUUID();
+  const q = new URLSearchParams({
+    client_id: env.GOOGLE_CLIENT_ID,
+    redirect_uri: `${url.origin}/api/google/callback`,
+    response_type: 'code',
+    scope: G_SCOPE,
+    access_type: 'offline',
+    prompt: 'consent',
+    state,
+  });
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: 'https://accounts.google.com/o/oauth2/v2/auth?' + q,
+      'set-cookie': `g_state=${state}; Path=/api/google; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
+      'cache-control': 'no-store',
+    },
+  });
+}
+
+async function googleCallback(req, env, url, owner) {
+  const back = (qs) => new Response(null, { status: 302, headers: { location: '/' + qs, 'cache-control': 'no-store' } });
+  if (!gConfigured(env)) return back('?gcal=error');
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+  if (!code || !state || state !== cookie(req, 'g_state')) return back('?gcal=error');
+  const r = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: env.GOOGLE_CLIENT_ID,
+      client_secret: env.GOOGLE_CLIENT_SECRET,
+      redirect_uri: `${url.origin}/api/google/callback`,
+      grant_type: 'authorization_code',
+    }),
+  });
+  if (!r.ok) return back('?gcal=error');
+  const t = await r.json();
+  if (t.refresh_token) await setSetting(env, owner, 'g_refresh', t.refresh_token);
+  else if (!(await getSetting(env, owner, 'g_refresh'))) return back('?gcal=error');
+  if (t.access_token) {
+    await setSetting(env, owner, 'g_access', t.access_token);
+    await setSetting(env, owner, 'g_exp', String(Date.now() + (t.expires_in || 3600) * 1000));
+  }
+  return back('?gcal=connected');
+}
+
+// Returns an access token, null when not connected, or throws 'needs_reauth'.
+async function googleToken(env, owner) {
+  const refresh = await getSetting(env, owner, 'g_refresh');
+  if (!refresh) return null;
+  const access = await getSetting(env, owner, 'g_access');
+  const exp = Number(await getSetting(env, owner, 'g_exp'));
+  if (access && exp > Date.now() + 60000) return access;
+  const r = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: env.GOOGLE_CLIENT_ID,
+      client_secret: env.GOOGLE_CLIENT_SECRET,
+      refresh_token: refresh,
+      grant_type: 'refresh_token',
+    }),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    if (j.error === 'invalid_grant') {
+      await delSetting(env, owner, 'g_refresh');
+      await delSetting(env, owner, 'g_access');
+      throw new Error('needs_reauth');
+    }
+    throw new Error('upstream');
+  }
+  const t = await r.json();
+  await setSetting(env, owner, 'g_access', t.access_token);
+  await setSetting(env, owner, 'g_exp', String(Date.now() + (t.expires_in || 3600) * 1000));
+  return t.access_token;
+}
+
+async function gcalRequest(env, owner, build) {
+  if (!gConfigured(env)) return { error: fail(503, 'Google is not configured', 'gcal_config') };
+  let token;
+  try { token = await googleToken(env, owner); } catch (e) {
+    return { error: e.message === 'needs_reauth' ? fail(401, 'Reconnect Google Calendar', 'needs_reauth') : fail(502, 'Google error', 'upstream_error') };
+  }
+  if (!token) return { error: fail(409, 'Google Calendar is not connected', 'not_connected') };
+  const r = await build(token);
+  if (r.status === 401) {
+    await delSetting(env, owner, 'g_access');
+    return { error: fail(401, 'Reconnect Google Calendar', 'needs_reauth') };
+  }
+  if (r.status === 429) return { error: fail(429, 'Google rate limit', 'rate_limited') };
+  if (!r.ok) return { error: fail(502, 'Google error', 'upstream_error') };
+  return { r };
+}
+
+async function gcalList(env, owner, url) {
+  const start = new Date(url.searchParams.get('start') || '');
+  const end = new Date(url.searchParams.get('end') || '');
+  if (isNaN(start) || isNaN(end) || end <= start || end - start > 100 * 86400000) return fail(400, 'Bad range', 'bad_request');
+  const r = await gcalRequest(env, owner, (token) => {
+    const q = new URLSearchParams({
+      timeMin: start.toISOString(),
+      timeMax: end.toISOString(),
+      singleEvents: 'true',
+      orderBy: 'startTime',
+      maxResults: '250',
+      fields: 'items(id,status,summary,start,end,htmlLink)',
+    });
+    return fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events?' + q, {
+      headers: { authorization: 'Bearer ' + token },
+    });
+  });
+  if (r.error) return r.error;
+  const j = await r.r.json();
+  return json({ events: j.items || [] });
+}
+
+async function gcalCreate(req, env, owner) {
+  let b;
+  try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
+  const summary = str(b.summary, 200).trim();
+  const RE_LOCAL = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/;
+  if (!summary || !RE_LOCAL.test(String(b.startTime)) || !RE_LOCAL.test(String(b.endTime))) return fail(400, 'Bad event', 'bad_request');
+  const tz = env.TIMEZONE || 'Asia/Jerusalem';
+  const body = { summary, description: str(b.description, 1000), reminders: { useDefault: true } };
+  if (b.allDay) {
+    body.start = { date: String(b.startTime).slice(0, 10) };
+    body.end = { date: String(b.endTime).slice(0, 10) };
+  } else {
+    const fix = (s) => (s.length === 16 ? s + ':00' : s);
+    body.start = { dateTime: fix(String(b.startTime)), timeZone: tz };
+    body.end = { dateTime: fix(String(b.endTime)), timeZone: tz };
+  }
+  const r = await gcalRequest(env, owner, (token) =>
+    fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+      method: 'POST',
+      headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  );
+  if (r.error) return r.error;
+  const j = await r.r.json();
+  return json({ id: j.id, htmlLink: j.htmlLink });
+}
+
+/* ---------- router ---------- */
+
+export default {
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    if (!(env.TEAM_DOMAIN && env.ACCESS_AUD) && pwMode(env)) {
+      if (url.pathname === '/login' && req.method === 'GET') {
+        return new Response(LOGIN_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+      }
+      if (url.pathname === '/api/login' && req.method === 'POST') return handleLogin(req, env);
+      if (url.pathname === '/api/logout') {
+        return new Response(null, { status: 302, headers: { location: '/login', 'set-cookie': 'amitis_s=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0' } });
+      }
+    }
+    const auth = await authenticate(req, env, url);
+    if (auth instanceof Response) return auth;
+    const owner = auth;
+
+    if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(req);
+
+    try {
+      const route = `${req.method} ${url.pathname}`;
+      switch (route) {
+        case 'GET /api/config': {
+          const connected = !!(await getSetting(env, owner, 'g_refresh'));
+          return json({ ai: aiEnabled(env), gcal: gConfigured(env), gconnected: connected, tz: env.TIMEZONE || 'Asia/Jerusalem' });
+        }
+        case 'GET /api/state':
+          return json(await getState(env, owner));
+        case 'POST /api/sync': {
+          let b;
+          try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
+          const n = await applySync(env, owner, b || {});
+          return json({ ok: true, n });
+        }
+        case 'POST /api/ai':
+          return await handleAi(req, env);
+        case 'GET /api/google/connect':
+          return await googleConnect(req, env, url);
+        case 'GET /api/google/callback':
+          return await googleCallback(req, env, url, owner);
+        case 'GET /api/gcal/events':
+          return await gcalList(env, owner, url);
+        case 'POST /api/gcal/events':
+          return await gcalCreate(req, env, owner);
+        default:
+          return fail(404, 'Not found', 'not_found');
+      }
+    } catch (e) {
+      console.error('api error', e && e.message);
+      return fail(500, 'Server error', 'server');
+    }
+  },
+};
