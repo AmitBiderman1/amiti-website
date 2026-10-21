@@ -139,6 +139,7 @@ const num = (v, min, max, def) => {
 const bit = (v) => (v ? 1 : 0);
 const dt = (v) => (typeof v === 'string' && (v === '' || RE_DT.test(v)) ? v : '');
 const TAGS = ['home', 'mil', 'priv', 'fam'];
+const RECS = ['', 'daily', 'weekdays', 'weekly', 'monthly'];
 const SLOTS = ['breakfast', 'lunch', 'dinner', 'snack'];
 
 async function getSetting(env, owner, key) {
@@ -157,7 +158,7 @@ const delSetting = (env, owner, key) =>
 async function getState(env, owner) {
   const cutoff = new Date(Date.now() - 120 * 86400000).toISOString().slice(0, 10);
   const [t, f, m, goal] = await Promise.all([
-    env.DB.prepare('SELECT id,text,due,dur,snooze,fired,tag,urgent,important,done,gcal_id FROM tasks WHERE owner=?').bind(owner).all(),
+    env.DB.prepare('SELECT id,text,due,dur,snooze,fired,tag,urgent,important,done,rec,gcal_id FROM tasks WHERE owner=?').bind(owner).all(),
     env.DB.prepare('SELECT id,day,slot,name,kcal,p,c,f FROM food WHERE owner=? AND day>=?').bind(owner, cutoff).all(),
     env.DB.prepare('SELECT id,name,servings,ing FROM meals WHERE owner=?').bind(owner).all(),
     getSetting(env, owner, 'goal'),
@@ -188,14 +189,14 @@ async function applySync(env, owner, b) {
     if (!text) continue;
     stmts.push(
       db.prepare(
-        `INSERT INTO tasks(owner,id,text,due,dur,snooze,fired,tag,urgent,important,done,updated)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        `INSERT INTO tasks(owner,id,text,due,dur,snooze,fired,tag,urgent,important,done,rec,updated)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(owner,id) DO UPDATE SET text=excluded.text,due=excluded.due,dur=excluded.dur,snooze=excluded.snooze,
            fired=excluded.fired,tag=excluded.tag,urgent=excluded.urgent,important=excluded.important,done=excluded.done,
-           updated=excluded.updated`
+           rec=excluded.rec,updated=excluded.updated`
       ).bind(
         owner, String(t.id), text, dt(t.due), Math.round(num(t.dur, 5, 1440, 30)), dt(t.snooze), dt(t.fired),
-        TAGS.includes(t.tag) ? t.tag : 'priv', bit(t.urgent), bit(t.important), bit(t.done), now
+        TAGS.includes(t.tag) ? t.tag : 'priv', bit(t.urgent), bit(t.important), bit(t.done), RECS.includes(t.rec) ? t.rec : '', now
       )
     );
     calTasks.push({ id: String(t.id), text, due: dt(t.due), dur: Math.round(num(t.dur, 5, 1440, 30)), tag: TAGS.includes(t.tag) ? t.tag : 'priv', done: !!t.done });
@@ -697,6 +698,7 @@ async function syncClassroom(env, owner, force = false) {
   const now = new Date().toISOString();
   const oldest = new Date(Date.now() - 14 * 86400000).toLocaleDateString('sv-SE', { timeZone: env.TIMEZONE || 'Asia/Jerusalem' });
   let added = 0, done = 0;
+  const newTasks = [];
   const courses = (await gGet(env, owner, 'https://classroom.googleapis.com/v1/courses?studentId=me&courseStates=ACTIVE&pageSize=30')).courses || [];
   for (const c of courses.slice(0, 15)) {
     const base = `https://classroom.googleapis.com/v1/courses/${encodeURIComponent(c.id)}/courseWork`;
@@ -723,10 +725,11 @@ async function syncClassroom(env, owner, force = false) {
       ).bind(owner, 'cr' + (await shortHash(src)), str(`${w.title} (${c.name})`, 200), due, 15, '', '', 'priv', bit(soon), 1, 0, src, now).run();
       await markSeen(env, owner, 'cr', src);
       added++;
+      newTasks.push({ text: str(`${w.title} (${c.name})`, 120), due });
     }
   }
   if (added) await reconcileCalendar(env, owner, 25);
-  return { ok: true, added, done };
+  return { ok: true, added, done, newTasks };
 }
 
 /* Gmail: find order emails and keep a small table of orders (no email bodies are stored). */
@@ -808,6 +811,8 @@ async function checkOrders(env, owner, force = false) {
   const fresh = [];
   for (const m of list) if (!(await isSeen(env, owner, 'mail', m.id))) fresh.push(m.id);
   let changed = 0, aiBudget = 8;
+  const updates = [];
+  const recent = Date.now() - 2 * 86400000;
   const msgs = [];
   for (const id of fresh.slice(0, 25)) {
     const m = await gGet(env, owner, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`);
@@ -836,6 +841,7 @@ async function checkOrders(env, owner, force = false) {
       if ((STATUS_RANK[status] || 0) > (STATUS_RANK[ex.status] || 0) || status === 'cancelled') {
         await env.DB.prepare('UPDATE orders SET status=?,updated=?,msg_id=?,order_no=?,hidden=0 WHERE owner=? AND id=?').bind(status, placed, m.id, ex.order_no || no, owner, ex.id).run();
         changed++;
+        if (m.date > recent) updates.push({ shop, item: ex.item, status });
       } else if (no && !ex.order_no) {
         await env.DB.prepare('UPDATE orders SET order_no=? WHERE owner=? AND id=?').bind(no, owner, ex.id).run();
       }
@@ -848,8 +854,9 @@ async function checkOrders(env, owner, force = false) {
       'INSERT INTO orders(owner,id,shop,item,order_no,status,placed,updated,msg_id,hidden) VALUES(?,?,?,?,?,?,?,?,?,0)'
     ).bind(owner, 'o' + (await shortHash(m.id)), shop, item, no, status, placed, placed, m.id).run();
     changed++;
+    if (m.date > recent) updates.push({ shop, item, status });
   }
-  return { ok: true, changed, scanned: msgs.length };
+  return { ok: true, changed, scanned: msgs.length, updates };
 }
 
 async function listOrders(env, owner) {
@@ -864,6 +871,166 @@ async function autoRefresh(env, owner) {
   try { await syncClassroom(env, owner); } catch (e) { console.error('classroom', e && e.message); }
   try { await checkOrders(env, owner); } catch (e) { console.error('orders', e && e.message); }
 }
+
+
+/* ---------- Web Push (reminders to your phone even when the app is closed) ---------- */
+
+const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const concatBytes = (...a) => {
+  const out = new Uint8Array(a.reduce((n, x) => n + x.length, 0));
+  let o = 0;
+  for (const x of a) { out.set(x, o); o += x.length; }
+  return out;
+};
+
+// The VAPID key pair identifies this app to the push services. It is created once and kept in your own database.
+async function ensureVapid(env, owner) {
+  let pub = await getSetting(env, owner, 'vapid_pub');
+  let priv = await getSetting(env, owner, 'vapid_priv');
+  if (pub && priv) return { pub, priv };
+  const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign']);
+  const jwk = await crypto.subtle.exportKey('jwk', kp.privateKey);
+  const raw = new Uint8Array(65);
+  raw[0] = 4;
+  raw.set(b64uToBytes(jwk.x), 1);
+  raw.set(b64uToBytes(jwk.y), 33);
+  pub = b64u(raw);
+  priv = jwk.d;
+  await setSetting(env, owner, 'vapid_pub', pub);
+  await setSetting(env, owner, 'vapid_priv', priv);
+  return { pub, priv };
+}
+
+async function vapidHeader(v, endpoint) {
+  const raw = b64uToBytes(v.pub);
+  const key = await crypto.subtle.importKey(
+    'jwk',
+    { kty: 'EC', crv: 'P-256', x: b64u(raw.slice(1, 33)), y: b64u(raw.slice(33, 65)), d: v.priv },
+    { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']
+  );
+  const enc = new TextEncoder();
+  const head = b64u(enc.encode(JSON.stringify({ typ: 'JWT', alg: 'ES256' })));
+  const claims = b64u(enc.encode(JSON.stringify({ aud: new URL(endpoint).origin, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: 'https://amiti-website.pages.dev' })));
+  const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, enc.encode(head + '.' + claims));
+  return `vapid t=${head}.${claims}.${b64u(sig)}, k=${v.pub}`;
+}
+
+// RFC 8291 (aes128gcm) encryption of the payload for one subscription.
+async function encryptPush(sub, payload) {
+  const enc = new TextEncoder();
+  const uaPub = b64uToBytes(sub.p256dh);
+  const auth = b64uToBytes(sub.auth);
+  const eph = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const asPub = new Uint8Array(await crypto.subtle.exportKey('raw', eph.publicKey));
+  const uaKey = await crypto.subtle.importKey('raw', uaPub, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const ecdh = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: uaKey }, eph.privateKey, 256));
+  const hkdf = async (salt, ikm, info, len) => {
+    const k = await crypto.subtle.importKey('raw', ikm, 'HKDF', false, ['deriveBits']);
+    return new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info }, k, len * 8));
+  };
+  const prk = await hkdf(auth, ecdh, concatBytes(enc.encode('WebPush: info\0'), uaPub, asPub), 32);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const cek = await hkdf(salt, prk, enc.encode('Content-Encoding: aes128gcm\0'), 16);
+  const nonce = await hkdf(salt, prk, enc.encode('Content-Encoding: nonce\0'), 12);
+  const key = await crypto.subtle.importKey('raw', cek, 'AES-GCM', false, ['encrypt']);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, key, concatBytes(enc.encode(payload), new Uint8Array([2]))));
+  return concatBytes(salt, new Uint8Array([0, 0, 0x10, 0, 65]), asPub, ct);
+}
+
+async function pushCount(env, owner) {
+  const r = await env.DB.prepare('SELECT COUNT(*) c FROM push_subs WHERE owner=?').bind(owner).first();
+  return r ? r.c : 0;
+}
+
+// Sends one notification to every phone/browser that enabled alerts. Returns how many accepted it.
+async function sendPush(env, owner, note) {
+  const subs = (await env.DB.prepare('SELECT endpoint,p256dh,auth FROM push_subs WHERE owner=?').bind(owner).all()).results;
+  if (!subs.length) return 0;
+  const v = await ensureVapid(env, owner);
+  const body = JSON.stringify({ title: str(note.title, 100), body: str(note.body, 200), url: note.url || '/', tag: str(note.tag || '', 60) });
+  let ok = 0;
+  for (const s of subs) {
+    try {
+      const r = await fetch(s.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: await vapidHeader(v, s.endpoint),
+          'content-encoding': 'aes128gcm',
+          'content-type': 'application/octet-stream',
+          ttl: '86400',
+          urgency: 'normal',
+        },
+        body: await encryptPush(s, body),
+      });
+      if (r.status === 404 || r.status === 410) await env.DB.prepare('DELETE FROM push_subs WHERE owner=? AND endpoint=?').bind(owner, s.endpoint).run();
+      else if (r.ok) ok++;
+      else console.error('push status', r.status);
+    } catch (e) { console.error('push error', e && e.message); }
+  }
+  return ok;
+}
+
+const localStamp = (env, ms = Date.now()) =>
+  new Date(ms).toLocaleString('sv-SE', { timeZone: env.TIMEZONE || 'Asia/Jerusalem' }).replace(' ', 'T').slice(0, 16);
+
+// Reminders that came due (or were snoozed to now) and were not shown yet. Marks them as fired.
+async function runReminders(env, owner) {
+  if (!(await pushCount(env, owner))) return 0;
+  const nowL = localStamp(env), oldest = localStamp(env, Date.now() - 12 * 3600000);
+  const eff = "(CASE WHEN snooze<>'' THEN snooze ELSE due END)";
+  const rows = (await env.DB.prepare(
+    `SELECT id,text,${eff} AS e FROM tasks WHERE owner=? AND done=0 AND ${eff}<>'' AND fired<>${eff} AND ${eff}<=? AND ${eff}>=? ORDER BY e LIMIT 10`
+  ).bind(owner, nowL, oldest).all()).results;
+  let sent = 0;
+  for (const t of rows) {
+    const d = new Date(t.e);
+    const when = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    const ok = await sendPush(env, owner, { title: '⏰ ' + t.text, body: 'Due ' + when, tag: 't' + t.id });
+    if (ok) { await env.DB.prepare('UPDATE tasks SET fired=? WHERE owner=? AND id=?').bind(t.e, owner, t.id).run(); sent++; }
+  }
+  return sent;
+}
+
+const ORDER_PUSH = { shipped: 'Shipped', out_for_delivery: 'Out for delivery', ready_for_pickup: 'Ready for pickup', delivered: 'Delivered' };
+
+// Called by the scheduled worker every 15 minutes.
+async function scheduledRun(env) {
+  const owner = 'owner';
+  const out = { reminders: 0, classroom: 0, orders: 0 };
+  try { out.reminders = await runReminders(env, owner); } catch (e) { console.error('reminders', e && e.message); }
+  try {
+    const c = await syncClassroom(env, owner);
+    if (c.ok && c.newTasks && c.newTasks.length) {
+      const list = c.newTasks.slice(0, 3);
+      for (const t of list) await sendPush(env, owner, { title: '🎓 New in Classroom', body: t.text, tag: 'cr' });
+      if (c.newTasks.length > 3) await sendPush(env, owner, { title: '🎓 Classroom', body: `and ${c.newTasks.length - 3} more new assignments` });
+      out.classroom = c.newTasks.length;
+    }
+  } catch (e) { console.error('classroom', e && e.message); }
+  try {
+    const o = await checkOrders(env, owner);
+    if (o.ok && o.updates && o.updates.length) {
+      for (const u of o.updates.filter((x) => ORDER_PUSH[x.status]).slice(0, 4)) {
+        await sendPush(env, owner, { title: '📦 ' + ORDER_PUSH[u.status], body: `${u.shop}${u.item ? ': ' + u.item : ''}`, url: '/#orders', tag: 'ord' });
+      }
+      out.orders = o.updates.length;
+    }
+  } catch (e) { console.error('orders', e && e.message); }
+  return out;
+}
+
+async function exportAll(env, owner) {
+  const q = (sql) => env.DB.prepare(sql).bind(owner).all().then((r) => r.results);
+  return {
+    exported: new Date().toISOString(),
+    tasks: await q('SELECT id,text,due,dur,snooze,tag,urgent,important,done,rec FROM tasks WHERE owner=?'),
+    food: await q('SELECT id,day,slot,name,kcal,p,c,f FROM food WHERE owner=?'),
+    meals: await q('SELECT id,name,servings,ing FROM meals WHERE owner=?'),
+    orders: await q('SELECT shop,item,order_no,status,placed,updated FROM orders WHERE owner=? AND hidden=0'),
+  };
+}
+
+export { scheduledRun, runReminders, sendPush, ensureVapid, encryptPush, vapidHeader, syncClassroom, checkOrders };
 
 export default {
   async fetch(req, env, ctx) {
@@ -934,6 +1101,29 @@ export default {
           if (RE_ID.test(String(b?.id))) await env.DB.prepare('UPDATE orders SET hidden=1 WHERE owner=? AND id=?').bind(owner, String(b.id)).run();
           return json({ ok: true });
         }
+        case 'GET /api/push/key':
+          return json({ key: (await ensureVapid(env, owner)).pub, subscribed: (await pushCount(env, owner)) > 0 });
+        case 'POST /api/push/subscribe': {
+          let b;
+          try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
+          const ep = String(b?.endpoint || ''), k = b?.keys || {};
+          if (!/^https:\/\/[^\s]{10,480}$/.test(ep) || !/^[A-Za-z0-9_-]{60,100}$/.test(String(k.p256dh)) || !/^[A-Za-z0-9_-]{10,40}$/.test(String(k.auth))) return fail(400, 'Bad subscription', 'bad_request');
+          await env.DB.prepare('INSERT INTO push_subs(owner,endpoint,p256dh,auth,created) VALUES(?,?,?,?,?) ON CONFLICT(owner,endpoint) DO UPDATE SET p256dh=excluded.p256dh,auth=excluded.auth')
+            .bind(owner, ep, String(k.p256dh), String(k.auth), new Date().toISOString()).run();
+          return json({ ok: true });
+        }
+        case 'POST /api/push/unsubscribe': {
+          let b;
+          try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
+          await env.DB.prepare('DELETE FROM push_subs WHERE owner=? AND endpoint=?').bind(owner, String(b?.endpoint || '')).run();
+          return json({ ok: true });
+        }
+        case 'POST /api/push/test':
+          return json({ ok: true, sent: await sendPush(env, owner, { title: 'Amiti’s', body: 'Alerts are working 🎉' }) });
+        case 'GET /api/export':
+          return new Response(JSON.stringify(await exportAll(env, owner), null, 2), {
+            headers: { ...JSON_HEADERS, 'content-disposition': `attachment; filename="amitis-backup-${new Date().toISOString().slice(0, 10)}.json"` },
+          });
         case 'GET /api/gcal/events':
           return await gcalList(env, owner, url);
         case 'POST /api/gcal/events':

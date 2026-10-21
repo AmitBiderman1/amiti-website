@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   gcal      INTEGER NOT NULL DEFAULT 0,
   gcal_id   TEXT NOT NULL DEFAULT '',
   src       TEXT NOT NULL DEFAULT '',
+  rec       TEXT NOT NULL DEFAULT '',
   updated   TEXT NOT NULL,
   PRIMARY KEY (owner, id)
 );
@@ -68,4 +69,13 @@ CREATE TABLE IF NOT EXISTS orders (
   msg_id   TEXT NOT NULL DEFAULT '',
   hidden   INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (owner, id)
+);
+
+CREATE TABLE IF NOT EXISTS push_subs (
+  owner    TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  p256dh   TEXT NOT NULL,
+  auth     TEXT NOT NULL,
+  created  TEXT NOT NULL,
+  PRIMARY KEY (owner, endpoint)
 );

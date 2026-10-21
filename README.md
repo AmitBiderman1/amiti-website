@@ -110,3 +110,22 @@ For Google login locally, add `http://localhost:8787/api/google/callback` as a s
   If two devices edit the same item at once, the last save wins.
 - Your tasks and food from the old claude.ai artifact live in that artifact’s browser storage and were not
   moved automatically.
+
+## Alerts when the app is closed, Classroom and order checks (free)
+
+Cloudflare Pages cannot run on a schedule, so a tiny second Worker does it. It is free (cron triggers are included).
+
+1. Cloudflare dashboard > **Workers & Pages** > **Create** > **Import a repository** > choose `amiti-website`.
+2. Project name: `amiti-cron`. Deploy command: `npx wrangler deploy -c wrangler.cron.toml`. Leave the build command empty.
+3. After it deploys: **amiti-cron** > **Settings** > **Variables and Secrets** > add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (the same two values as the website, as **Secret**).
+4. On your phone, open the site from the Home Screen icon and tap **Enable alerts** (on iPhone this only appears in the Home Screen app).
+
+Every 15 minutes the worker sends reminders for tasks that came due, and checks Classroom and Gmail. Without it, reminders still work while the app is open.
+
+## Backup
+
+The 💾 button in the header downloads all your tasks, food, meals and orders as a JSON file.
+
+## Database changes
+
+Run the files in `migrations/` once, in order, against the remote database (`001_gcal_id.sql`, `002_classroom_orders.sql`, `003_recurring_push.sql`).

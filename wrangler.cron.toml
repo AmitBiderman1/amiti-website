@@ -1,0 +1,22 @@
+# Scheduled worker for reminders, Classroom and orders. Free plan: cron triggers are included.
+name = "amiti-cron"
+main = "src/cron.js"
+compatibility_date = "2025-10-01"
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "amitis"
+database_id = "c8dcd800-50ee-475b-ba1f-223c8229adc4"
+
+[ai]
+binding = "AI"
+
+[vars]
+TIMEZONE = "Asia/Jerusalem"
+AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
+
+# Secrets (add in the Cloudflare dashboard under this worker > Settings > Variables and Secrets):
+#   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET  (the same two values as the website)
