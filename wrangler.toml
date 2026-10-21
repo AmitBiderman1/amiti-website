@@ -1,4 +1,4 @@
-name = "amitis"
+name = "amiti-website"
 main = "src/worker.js"
 compatibility_date = "2025-10-01"
 
