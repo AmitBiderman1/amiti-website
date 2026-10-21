@@ -192,6 +192,9 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
 .slbl b{color:var(--ink)}
 .obadge{font-size:.78rem;font-weight:600;border-radius:999px;padding:2px 10px;background:var(--today)}
 .obadge.delivered{background:#dcebd6;color:#2f5a2a}.obadge.cancelled{background:#f6dcd6;color:#8a2f1d}
+.nl{display:flex;flex-direction:column;gap:3px;min-width:0}
+.nl small{font-size:.7rem;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nl input{min-width:0;width:100%}
 </style>
 </head>
 <body>
@@ -862,7 +865,7 @@ function renderStage(){var st=$('fstage');st.innerHTML='';if(!stage.length||fTab
     var nm=document.createElement('input');nm.type='text';nm.value=it.name;nm.maxLength=120;nm.oninput=function(){it.name=nm.value};r.appendChild(nm);
     if(it.portion){var po=document.createElement('div');po.className='note';po.style.gridColumn='2';po.textContent='Portion: '+it.portion;r.appendChild(po)}
     var ns=document.createElement('div');ns.className='nums';
-    [['kcal','kcal'],['p','protein g'],['c','carbs g'],['f','fat g']].forEach(function(k){var i=document.createElement('input');i.type='number';i.min=0;i.step='any';i.value=it[k[0]];i.title=k[1];i.setAttribute('aria-label',k[1]);i.placeholder=k[1];i.oninput=function(){it[k[0]]=num(i.value)};ns.appendChild(i)});
+    [['kcal','kcal','Calories'],['p','protein g','Protein (g)'],['c','carbs g','Carbs (g)'],['f','fat g','Fat (g)']].forEach(function(k){var i=document.createElement('input');i.type='number';i.min=0;i.step='any';i.value=it[k[0]];i.title=k[1];i.setAttribute('aria-label',k[1]);i.oninput=function(){it[k[0]]=num(i.value)};ns.appendChild(numLabel(k[2],i))});
     r.appendChild(ns);st.appendChild(r)});
   var b=document.createElement('div');b.className='fbar';
   var add=document.createElement('button');add.className='btn p';add.textContent='Add selected';add.onclick=function(){var sel=stage.filter(function(x){return x.on});if(!sel.length)return;addEntries(sel,$('fslot').value);stage=[];fstat('Added.');renderFood()};
@@ -874,6 +877,7 @@ function openFood(en){fEdit=en||null;$('fTitle').textContent=en?'Edit food':'Add
   $('fName').value=en?en.name:'';$('fSlot2').value=en?en.slot:$('fslot').value;$('fK').value=en?en.kcal:'';$('fP').value=en?en.p:'';$('fC').value=en?en.c:'';$('fF').value=en?en.f:'';
   try{$('dlgF').showModal()}catch(e){$('dlgF').setAttribute('open','')}$('fName').focus()}
 
+function numLabel(t,i){var l=document.createElement('label');l.className='nl';var s=document.createElement('small');s.textContent=t;l.appendChild(s);l.appendChild(i);return l}
 /* describe */
 function runDescribe(){var tx=$('fdesc').value.trim();if(!tx||!sm)return;var b=$('fgo');b.disabled=true;fstat('Looking up nutrition…');
   sm.json(ITEMS_PROMPT+'\n\nWhat the user ate:\n'+tx.slice(0,2000),{modelTier:'default'}).then(stageFrom).catch(function(e){fstat(aiErr(e))}).then(function(){b.disabled=!sm})}
@@ -916,7 +920,7 @@ function mRender(){var box=$('mRows');box.innerHTML='';
     var n=document.createElement('input');n.type='text';n.placeholder='Ingredient and amount (e.g. 500 g ground beef)';n.value=row.n;n.maxLength=120;n.oninput=function(){row.n=n.value};d.appendChild(n);
     var x=document.createElement('button');x.type='button';x.className='x';x.textContent='✕';x.title='Remove';x.setAttribute('aria-label','Remove ingredient');x.onclick=function(){mRows.splice(idx,1);mRender()};d.appendChild(x);
     var ns=document.createElement('div');ns.className='nums';
-    [['k','kcal'],['p','protein g'],['c','carbs g'],['f','fat g']].forEach(function(k){var i=document.createElement('input');i.type='number';i.min=0;i.step='any';i.placeholder=k[1];i.title=k[1];i.setAttribute('aria-label',k[1]);i.value=row[k[0]];i.oninput=function(){row[k[0]]=i.value;mTotals()};ns.appendChild(i)});
+    [['k','kcal','Calories'],['p','protein g','Protein (g)'],['c','carbs g','Carbs (g)'],['f','fat g','Fat (g)']].forEach(function(k){var i=document.createElement('input');i.type='number';i.min=0;i.step='any';i.title=k[1];i.setAttribute('aria-label',k[1]);i.value=row[k[0]];i.oninput=function(){row[k[0]]=i.value;mTotals()};ns.appendChild(numLabel(k[2],i))});
     d.appendChild(ns);box.appendChild(d)});mTotals()}
 function openMeal(m){mEdit=m||null;$('mName').value=m?m.name:'';$('mServ').value=m?m.servings:4;$('mMsg').textContent='';
   mRows=m?m.ing.map(function(i){return {n:i.n,k:i.k,p:i.p,c:i.c,f:i.f}}):[{n:'',k:'',p:'',c:'',f:''},{n:'',k:'',p:'',c:'',f:''}];
