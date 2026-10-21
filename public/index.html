@@ -725,7 +725,7 @@ function setupClassroom(){var b=$('crBtn');if(!CFG.gcal){b.hidden=true;return}
   if(CFG.classroom){b.textContent='🎓 Update from Classroom';b.onclick=function(){b.disabled=true;b.textContent='Checking…';
     fetch('/api/classroom/sync',{method:'POST'}).then(function(r){return r.json().then(function(j){return {r:r,j:j}})}).then(function(x){
       if(x.r.status===401){say('Reconnect Google to continue.');return}
-      if(!x.r.ok){say('Could not reach Classroom. Try again later.');return}
+      if(!x.r.ok){say('Could not reach Classroom ('+(x.j.code||x.r.status)+').');return}
       say(x.j.added?x.j.added+' new from Classroom':'Nothing new in Classroom');return refreshState()})
     .catch(function(){say('Could not reach Classroom.')}).then(function(){b.disabled=false;b.textContent='🎓 Update from Classroom'})}}
   else{b.textContent='🎓 Connect Classroom';b.onclick=function(){location.href='/api/google/connect'}}}
@@ -763,7 +763,7 @@ function renderOrders(){
 function checkOrdersNow(){if(ordBusy)return;ordBusy=true;renderOrders();
   fetch('/api/orders/check',{method:'POST'}).then(function(r){return r.json().then(function(j){return {r:r,j:j}})}).then(function(x){
     if(x.r.status===401){say('Reconnect Google to continue.');return}
-    if(!x.r.ok){say('Could not reach Gmail. Try again later.');return}
+    if(!x.r.ok){say('Could not reach Gmail ('+(x.j.code||x.r.status)+').');return}
     ordData={orders:x.j.orders,mail:true};say(x.j.changed?x.j.changed+' order update(s)':'No new order emails')})
   .catch(function(){say('Could not reach Gmail.')}).then(function(){ordBusy=false;renderOrders()})}
 var TABS=[['today','Today'],['tasks','Tasks'],['orders','Orders'],['cal','Calendar'],['food','Food']];

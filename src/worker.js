@@ -642,7 +642,11 @@ async function gGet(env, owner, url) {
   if (!token) throw new Error('not_connected');
   const r = await fetch(url, { headers: { authorization: 'Bearer ' + token } });
   if (r.status === 401) { await delSetting(env, owner, 'g_access'); throw new Error('needs_reauth'); }
-  if (!r.ok) throw new Error('upstream_' + r.status);
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    const why = String(j?.error?.status || j?.error?.errors?.[0]?.reason || '').toLowerCase().replace(/[^a-z_]/g, '');
+    throw new Error('google_' + r.status + (why ? '_' + why : ''));
+  }
   return r.json();
 }
 
@@ -876,7 +880,7 @@ export default {
         }
         case 'POST /api/classroom/sync': {
           try { return json(await syncClassroom(env, owner, true)); } catch (e) {
-            return fail(e.message === 'needs_reauth' ? 401 : 502, 'Classroom error', e.message === 'needs_reauth' ? 'needs_reauth' : 'upstream_error');
+            return fail(e.message === 'needs_reauth' ? 401 : 502, 'Classroom error', e.message === 'needs_reauth' ? 'needs_reauth' : String(e.message || 'upstream_error').slice(0, 40));
           }
         }
         case 'GET /api/orders':
@@ -884,7 +888,7 @@ export default {
         case 'POST /api/orders/check': {
           let res;
           try { res = await checkOrders(env, owner, true); } catch (e) {
-            return fail(e.message === 'needs_reauth' ? 401 : 502, 'Gmail error', e.message === 'needs_reauth' ? 'needs_reauth' : 'upstream_error');
+            return fail(e.message === 'needs_reauth' ? 401 : 502, 'Gmail error', e.message === 'needs_reauth' ? 'needs_reauth' : String(e.message || 'upstream_error').slice(0, 40));
           }
           return json({ ...res, orders: await listOrders(env, owner) });
         }
