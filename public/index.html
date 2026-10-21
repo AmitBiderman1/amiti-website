@@ -166,6 +166,16 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
 .tile small{display:block;color:var(--mute);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .msg{color:var(--lo);font-size:.9rem;min-height:1.2em;margin-bottom:6px}
 .hide{display:none}
+
+.tsec{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 16px;margin-bottom:12px}
+.tsec h3{margin:0 0 2px;font-size:1.05rem;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.tsec h3 .c{margin-left:auto;font:600 .75rem system-ui;color:var(--mute);border:1px solid var(--line);border-radius:999px;padding:2px 10px}
+.tsec small.h{display:block;color:var(--mute);margin-bottom:8px}
+.tsec.od{border-color:var(--hi)}.tsec.od h3{color:var(--hi)}
+.tsec.td{background:var(--today)}
+.tsec .bar{height:6px;background:var(--beige);border-radius:6px;overflow:hidden;margin:6px 0 8px}
+.tsec .bar i{display:block;height:100%;background:var(--accent);border-radius:6px}
+.tsec .fold{width:100%;text-align:left;background:none;border:1px dashed var(--line);border-radius:12px;padding:10px 14px;cursor:pointer;color:var(--mute);font:inherit}
 </style>
 </head>
 <body>
@@ -185,8 +195,10 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
 
   <section id="v-tasks" class="hide">
     <div class="top"><button class="btn p" id="add">＋ New task</button><label class="note"><input type="checkbox" id="showDone"> Show completed</label></div>
+    <div class="seg" id="tview" style="margin:0 0 12px;width:max-content"></div>
     <div class="chips card" id="chips" style="padding:10px 14px"></div>
     <div class="quad" id="quad"></div>
+    <div id="tbytime" class="hide"></div>
     <div class="foot"><span id="count"></span><button class="btn" id="clear">Clear done</button></div>
   </section>
 
@@ -535,7 +547,33 @@ function renderToday(){var td=isoD(new Date());loadToday();
   tile('Calendar',tEv===null?'–':String(ev.length),next?'Next '+next.time+' '+next.title:(tEv===null?'not loaded':ev.length?'nothing more today':'free day'),'cal');
   tile('Food',Math.round(ft.kcal)+'',left>=0?Math.round(left)+' kcal left':Math.round(-left)+' kcal over','food')}
 var QS=[[1,1,'Urgent & Important','Do first'],[0,1,'Not urgent & Important','Schedule it'],[1,0,'Urgent & Not important','Quick or delegate'],[0,0,'Not urgent & Not important','Later or drop']];
+var tView='matrix',tFold={later:false,none:false};
+function renderByTime(){
+  var box=$('tbytime');box.innerHTML='';
+  var now=new Date(),td=isoD(now),wk=isoD(new Date(now.getFullYear(),now.getMonth(),now.getDate()+7));
+  var vis=function(t){return act[t.tag]};
+  var dk=function(t){var e=t.snooze||t.due;return e?e.slice(0,10):''};
+  var open=tasks.filter(function(t){return !t.done&&vis(t)}),dn=tasks.filter(function(t){return t.done&&vis(t)});
+  var S=[
+    ['od','Overdue','Catch up or reschedule',function(k){return k&&k<td},null],
+    ['td','Today','',function(k){return k===td},null],
+    ['wk','This week','The next 7 days',function(k){return k>td&&k<=wk},null],
+    ['lt','Later','More than a week away',function(k){return k>wk},'later'],
+    ['nd','When I have time','No date, no pressure',function(k){return !k},'none']];
+  S.forEach(function(s){
+    var l=open.filter(function(t){return s[3](dk(t))}).sort(byTime);
+    var d=dn.filter(function(t){return s[3](dk(t))});
+    if(!l.length&&!d.length&&(s[0]==='od'))return;
+    var sec=document.createElement('div');sec.className='tsec '+s[0];
+    var h3=document.createElement('h3');h3.textContent=s[1];var c=document.createElement('span');c.className='c';c.textContent=l.length+' open';h3.appendChild(c);sec.appendChild(h3);
+    if(s[2]){var sm=document.createElement('small');sm.className='h';sm.textContent=s[2];sec.appendChild(sm)}
+    if(s[0]==='td'){var tot=l.length+d.length,b=document.createElement('div');b.className='bar';var i=document.createElement('i');i.style.width=(tot?Math.round(d.length*100/tot):0)+'%';b.appendChild(i);sec.appendChild(b)}
+    if(s[4]&&!tFold[s[4]]&&l.length){var f=document.createElement('button');f.className='fold';f.textContent='Show '+l.length+' tasks';f.onclick=function(){tFold[s[4]]=true;render()};sec.appendChild(f)}
+    else{var ul=document.createElement('ul');sec.appendChild(ul);fillList(ul,l.concat(showDone?d:[]),'Nothing here')}
+    box.appendChild(sec)})}
 function renderTasks(){var c=$('chips');c.innerHTML='';
+  var tv=$('tview');tv.innerHTML='';[['matrix','Priority'],['time','By time']].forEach(function(x){var b=document.createElement('button');b.textContent=x[1];b.className=tView===x[0]?'on':'';b.onclick=function(){tView=x[0];render()};tv.appendChild(b)});
+  $('quad').classList.toggle('hide',tView!=='matrix');$('tbytime').classList.toggle('hide',tView!=='time');if(tView==='time')renderByTime();
   var all=TAGS.every(function(t){return act[t.k]});
   var ab=document.createElement('button');ab.className='chip'+(all?' on':'');ab.textContent='All';ab.onclick=function(){TAGS.forEach(function(t){act[t.k]=1});render()};c.appendChild(ab);
   TAGS.forEach(function(t){var b=document.createElement('button');b.className='chip'+(act[t.k]?' on':'');
@@ -658,6 +696,7 @@ function renderCal(){
 }
 
 var TABS=[['today','Today'],['tasks','Tasks'],['cal','Calendar'],['food','Food']];
+
 function renderNav(){var n=$('nav');n.innerHTML='';
   TABS.forEach(function(x){var b=document.createElement('button');b.textContent=x[1];b.className=tab===x[0]?'on':'';b.onclick=function(){tab=x[0];openSn=null;render()};n.appendChild(b)});
   TABS.forEach(function(x){$('v-'+x[0]).classList.toggle('hide',tab!==x[0])})}
