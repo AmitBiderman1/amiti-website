@@ -122,7 +122,7 @@ async function handleLogin(req, env) {
   const exp = Date.now() + 30 * 86400000;
   const sig = await hmacHex(env.APP_PASSWORD, 's:' + exp);
   return json({ ok: true }, 200, {
-    'set-cookie': `amitis_s=${exp}.${sig}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000`,
+    'set-cookie': `amitis_s=${exp}.${sig}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000`,
   });
 }
 
@@ -834,7 +834,7 @@ export default {
       }
       if (url.pathname === '/api/login' && req.method === 'POST') return handleLogin(req, env);
       if (url.pathname === '/api/logout') {
-        return new Response(null, { status: 302, headers: { location: '/login', 'set-cookie': 'amitis_s=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0' } });
+        return new Response(null, { status: 302, headers: { location: '/login', 'set-cookie': 'amitis_s=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0' } });
       }
     }
     const auth = await authenticate(req, env, url);
