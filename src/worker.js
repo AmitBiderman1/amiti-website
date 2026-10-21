@@ -458,7 +458,15 @@ async function aiWorkers(env, merged, images) {
 
 /* ---------- Google Calendar (OAuth + API) ---------- */
 
-const G_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+const GA = 'https://www.googleapis.com/auth/';
+const SC = {
+  cal: GA + 'calendar.events',
+  crCourses: GA + 'classroom.courses.readonly',
+  crWork: GA + 'classroom.coursework.me.readonly',
+  crSubs: GA + 'classroom.student-submissions.me.readonly',
+  mail: GA + 'gmail.readonly',
+};
+const G_SCOPE = Object.values(SC).join(' ');
 const gConfigured = (env) => !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
 
 function cookie(req, name) {
@@ -475,6 +483,7 @@ async function googleConnect(req, env, url) {
     response_type: 'code',
     scope: G_SCOPE,
     access_type: 'offline',
+    include_granted_scopes: 'true',
     prompt: 'consent',
     state,
   });
@@ -509,6 +518,7 @@ async function googleCallback(req, env, url, owner) {
   const t = await r.json();
   if (t.refresh_token) await setSetting(env, owner, 'g_refresh', t.refresh_token);
   else if (!(await getSetting(env, owner, 'g_refresh'))) return back('?gcal=error');
+  if (t.scope) await setSetting(env, owner, 'g_scope', t.scope);
   if (t.access_token) {
     await setSetting(env, owner, 'g_access', t.access_token);
     await setSetting(env, owner, 'g_exp', String(Date.now() + (t.expires_in || 3600) * 1000));
@@ -617,6 +627,204 @@ async function gcalCreate(req, env, owner) {
 
 /* ---------- router ---------- */
 
+
+/* ---------- Google Classroom + Gmail orders ---------- */
+
+const hasScope = async (env, owner, ...need) => {
+  const have = ((await getSetting(env, owner, 'g_scope')) || '').split(' ');
+  return need.every((s) => have.includes(s));
+};
+const classroomOk = (env, owner) => hasScope(env, owner, SC.crCourses, SC.crWork, SC.crSubs);
+const mailOk = (env, owner) => hasScope(env, owner, SC.mail);
+
+async function gGet(env, owner, url) {
+  const token = await googleToken(env, owner);
+  if (!token) throw new Error('not_connected');
+  const r = await fetch(url, { headers: { authorization: 'Bearer ' + token } });
+  if (r.status === 401) { await delSetting(env, owner, 'g_access'); throw new Error('needs_reauth'); }
+  if (!r.ok) throw new Error('upstream_' + r.status);
+  return r.json();
+}
+
+async function shortHash(s) {
+  const d = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(s));
+  return [...new Uint8Array(d)].slice(0, 9).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+const isSeen = async (env, owner, kind, key) =>
+  !!(await env.DB.prepare('SELECT 1 x FROM seen WHERE owner=? AND kind=? AND key=?').bind(owner, kind, key).first());
+const markSeen = (env, owner, kind, key) =>
+  env.DB.prepare('INSERT OR IGNORE INTO seen(owner,kind,key) VALUES(?,?,?)').bind(owner, kind, key).run();
+
+// Classroom gives deadlines in UTC; convert to the owner's local time.
+function classroomDue(env, w) {
+  const d = w.dueDate;
+  if (!d || !d.year) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  if (!w.dueTime || (w.dueTime.hours == null && w.dueTime.minutes == null)) return `${d.year}-${p(d.month)}-${p(d.day)}T23:59`;
+  const utc = new Date(Date.UTC(d.year, d.month - 1, d.day, w.dueTime.hours || 0, w.dueTime.minutes || 0));
+  return utc.toLocaleString('sv-SE', { timeZone: env.TIMEZONE || 'Asia/Jerusalem' }).replace(' ', 'T').slice(0, 16);
+}
+
+async function syncClassroom(env, owner, force = false) {
+  if (!gConfigured(env) || !(await getSetting(env, owner, 'g_refresh'))) return { ok: false, reason: 'not_connected' };
+  if (!(await classroomOk(env, owner))) return { ok: false, reason: 'scope' };
+  const last = Number(await getSetting(env, owner, 'cr_last')) || 0;
+  if (!force && Date.now() - last < 20 * 60000) return { ok: true, skipped: true, added: 0, done: 0 };
+  await setSetting(env, owner, 'cr_last', String(Date.now()));
+  const now = new Date().toISOString();
+  const oldest = new Date(Date.now() - 14 * 86400000).toLocaleDateString('sv-SE', { timeZone: env.TIMEZONE || 'Asia/Jerusalem' });
+  let added = 0, done = 0;
+  const courses = (await gGet(env, owner, 'https://classroom.googleapis.com/v1/courses?studentId=me&courseStates=ACTIVE&pageSize=30')).courses || [];
+  for (const c of courses.slice(0, 15)) {
+    const base = `https://classroom.googleapis.com/v1/courses/${encodeURIComponent(c.id)}/courseWork`;
+    const works = (await gGet(env, owner, base + '?pageSize=50&orderBy=dueDate%20desc')).courseWork || [];
+    const subs = (await gGet(env, owner, base + '/-/studentSubmissions?userId=me&pageSize=100')).studentSubmissions || [];
+    const state = {};
+    for (const s of subs) state[s.courseWorkId] = s.state;
+    for (const w of works) {
+      if (!w.dueDate) continue;
+      const src = `cr:${c.id}:${w.id}`;
+      const turned = state[w.id] === 'TURNED_IN' || state[w.id] === 'RETURNED';
+      const ex = await env.DB.prepare('SELECT id,done FROM tasks WHERE owner=? AND src=?').bind(owner, src).first();
+      if (ex) {
+        if (turned && !ex.done) { await env.DB.prepare('UPDATE tasks SET done=1,updated=? WHERE owner=? AND id=?').bind(now, owner, ex.id).run(); done++; }
+        continue;
+      }
+      if (await isSeen(env, owner, 'cr', src)) continue;
+      const due = classroomDue(env, w);
+      if (turned || !due || due.slice(0, 10) < oldest) { await markSeen(env, owner, 'cr', src); continue; }
+      const soon = new Date(due) - Date.now() < 2 * 86400000;
+      await env.DB.prepare(
+        `INSERT INTO tasks(owner,id,text,due,dur,snooze,fired,tag,urgent,important,done,src,updated)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      ).bind(owner, 'cr' + (await shortHash(src)), str(`${w.title} (${c.name})`, 200), due, 15, '', '', 'priv', bit(soon), 1, 0, src, now).run();
+      await markSeen(env, owner, 'cr', src);
+      added++;
+    }
+  }
+  if (added) await reconcileCalendar(env, owner, 25);
+  return { ok: true, added, done };
+}
+
+/* Gmail: find order emails and keep a small table of orders (no email bodies are stored). */
+
+const STATUS_RANK = { ordered: 1, shipped: 2, out_for_delivery: 3, delivered: 4, cancelled: 9 };
+const STATUS_RULES = [
+  ['cancelled', /cancel|refund|בוטל|ביטול הזמנה|זיכוי/i],
+  ['delivered', /delivered|נמסר|נמסרה|הגיעה ליעד|ready for pickup|מוכנה לאיסוף/i],
+  ['out_for_delivery', /out for delivery|arriving today|בדרך אליך|יצא(?:ה)? לחלוקה|יצא(?:ה)? למשלוח|שליח בדרך/i],
+  ['shipped', /shipped|has shipped|on its way|shipment|tracking|נשלח|נשלחה|יצא(?:ה)? לדרך|מספר מעקב/i],
+  ['ordered', /order confirm|thank you for your order|order received|we received your order|your order|הזמנה התקבלה|אישור הזמנה|תודה על ההזמנה|ההזמנה שלך|קיבלנו את ההזמנה/i],
+];
+function classifyOrder(text) {
+  for (const [s, re] of STATUS_RULES) if (re.test(text)) return s;
+  return null;
+}
+function shopFrom(from) {
+  let n = (/^\s*"?([^"<]+?)"?\s*</.exec(from) || [])[1] || '';
+  n = n.replace(/\b(orders?|support|noreply|no-reply|team|customer service|notifications?|shipping|store)\b/gi, '').replace(/[-–|]+\s*$/g, '').trim();
+  if (n.length < 2) {
+    const dom = (/@([\w.-]+)/.exec(from) || [])[1] || 'Unknown';
+    const parts = dom.split('.');
+    n = parts.length > 2 ? parts[parts.length - 2] : parts[0];
+    n = n.charAt(0).toUpperCase() + n.slice(1);
+  }
+  return n.slice(0, 60);
+}
+function orderNo(text) {
+  const re = /(?:order|הזמנה|הזמנתך)\s*(?:#|no\.?|number|מספר|:)?\s*#?\s*([A-Z0-9][A-Z0-9-]{4,24})/gi;
+  for (const m of text.matchAll(re)) if (/\d/.test(m[1])) return m[1];
+  const h = /#\s*([A-Z0-9][A-Z0-9-]{4,24})/i.exec(text);
+  return h && /\d/.test(h[1]) ? h[1] : '';
+}
+function mailText(payload) {
+  const parts = [];
+  const walk = (p) => {
+    if (!p) return;
+    if (p.body && p.body.data && /^text\/(plain|html)/.test(p.mimeType || '')) {
+      let t = new TextDecoder().decode(b64uToBytes(p.body.data));
+      if (p.mimeType === 'text/html') t = t.replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
+      parts.push(t.replace(/\s+/g, ' ').trim());
+    }
+    (p.parts || []).forEach(walk);
+  };
+  walk(payload);
+  return parts.join(' ').slice(0, 2500);
+}
+async function aiItem(env, shop, subject, body) {
+  if (!env.AI) return '';
+  try {
+    const r = await env.AI.run(env.AI_TEXT_MODEL || '@cf/meta/llama-3.1-8b-instruct', {
+      max_tokens: 60,
+      messages: [
+        { role: 'system', content: 'You read one order email. Reply with ONLY the name of the main product ordered, under 8 words, in the email language. If unclear reply NONE.' },
+        { role: 'user', content: `Shop: ${shop}\nSubject: ${subject}\n${body.slice(0, 1500)}` },
+      ],
+    });
+    const t = String(r.response || '').split('\n')[0].replace(/^["'\s]+|["'\s.]+$/g, '').slice(0, 80);
+    return /^none$/i.test(t) ? '' : t;
+  } catch { return ''; }
+}
+
+async function checkOrders(env, owner, force = false) {
+  if (!gConfigured(env) || !(await getSetting(env, owner, 'g_refresh'))) return { ok: false, reason: 'not_connected' };
+  if (!(await mailOk(env, owner))) return { ok: false, reason: 'scope' };
+  const last = Number(await getSetting(env, owner, 'ord_last')) || 0;
+  if (!force && Date.now() - last < 3 * 3600000) return { ok: true, skipped: true, changed: 0 };
+  await setSetting(env, owner, 'ord_last', String(Date.now()));
+  const q = 'newer_than:60d {subject:order subject:shipped subject:delivered subject:shipment subject:tracking subject:package subject:הזמנה subject:משלוח subject:נשלח subject:נמסר subject:חבילה}';
+  const list = (await gGet(env, owner, 'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=50&q=' + encodeURIComponent(q))).messages || [];
+  const fresh = [];
+  for (const m of list) if (!(await isSeen(env, owner, 'mail', m.id))) fresh.push(m.id);
+  let changed = 0, aiBudget = 8;
+  const msgs = [];
+  for (const id of fresh.slice(0, 25)) {
+    const m = await gGet(env, owner, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`);
+    const h = (n) => ((m.payload?.headers || []).find((x) => x.name.toLowerCase() === n) || {}).value || '';
+    msgs.push({ id, subject: h('subject'), from: h('from'), date: Number(m.internalDate) || Date.now(), snippet: m.snippet || '', body: mailText(m.payload) });
+  }
+  msgs.sort((a, b) => a.date - b.date);
+  for (const m of msgs) {
+    await markSeen(env, owner, 'mail', m.id);
+    const status = classifyOrder(m.subject + ' ' + m.snippet.slice(0, 200));
+    if (!status) continue;
+    const shop = shopFrom(m.from);
+    const no = orderNo(m.subject) || orderNo(m.snippet + ' ' + m.body);
+    const placed = new Date(m.date).toISOString();
+    let ex = null;
+    if (no) ex = await env.DB.prepare('SELECT * FROM orders WHERE owner=? AND shop=? AND order_no=?').bind(owner, shop, no).first();
+    else ex = await env.DB.prepare("SELECT * FROM orders WHERE owner=? AND shop=? AND status NOT IN ('delivered','cancelled') ORDER BY placed DESC LIMIT 1").bind(owner, shop).first();
+    if (ex) {
+      if ((STATUS_RANK[status] || 0) > (STATUS_RANK[ex.status] || 0) || status === 'cancelled') {
+        await env.DB.prepare('UPDATE orders SET status=?,updated=?,msg_id=?,hidden=0 WHERE owner=? AND id=?').bind(status, placed, m.id, owner, ex.id).run();
+        changed++;
+      }
+      continue;
+    }
+    let item = '';
+    if (aiBudget > 0) { aiBudget--; item = await aiItem(env, shop, m.subject, m.body); }
+    if (!item) item = str(m.subject, 80);
+    await env.DB.prepare(
+      'INSERT INTO orders(owner,id,shop,item,order_no,status,placed,updated,msg_id,hidden) VALUES(?,?,?,?,?,?,?,?,?,0)'
+    ).bind(owner, 'o' + (await shortHash(m.id)), shop, item, no, status, placed, placed, m.id).run();
+    changed++;
+  }
+  return { ok: true, changed, scanned: msgs.length };
+}
+
+async function listOrders(env, owner) {
+  const r = await env.DB.prepare(
+    'SELECT id,shop,item,order_no,status,placed,updated,msg_id FROM orders WHERE owner=? AND hidden=0 ORDER BY updated DESC LIMIT 100'
+  ).bind(owner).all();
+  return r.results;
+}
+
+// Called on every state load: refreshes Classroom (every 20 min) and orders (every 3 h) in the background.
+async function autoRefresh(env, owner) {
+  try { await syncClassroom(env, owner); } catch (e) { console.error('classroom', e && e.message); }
+  try { await checkOrders(env, owner); } catch (e) { console.error('orders', e && e.message); }
+}
+
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
@@ -640,11 +848,15 @@ export default {
       switch (route) {
         case 'GET /api/config': {
           const connected = !!(await getSetting(env, owner, 'g_refresh'));
-          return json({ ai: aiEnabled(env), gcal: gConfigured(env), gconnected: connected, tz: env.TIMEZONE || 'Asia/Jerusalem' });
+          return json({
+            ai: aiEnabled(env), gcal: gConfigured(env), gconnected: connected, tz: env.TIMEZONE || 'Asia/Jerusalem',
+            classroom: connected && (await classroomOk(env, owner)), mail: connected && (await mailOk(env, owner)),
+          });
         }
         case 'GET /api/state': {
           const st = await getState(env, owner);
           if (st.tasks.some((t) => t.due && !t.done && !t.gcal)) await background(ctx, reconcileCalendar(env, owner));
+          await background(ctx, autoRefresh(env, owner));
           return json(st);
         }
         case 'POST /api/sync': {
@@ -661,6 +873,26 @@ export default {
           const resp = await googleCallback(req, env, url, owner);
           await background(ctx, reconcileCalendar(env, owner, 25));
           return resp;
+        }
+        case 'POST /api/classroom/sync': {
+          try { return json(await syncClassroom(env, owner, true)); } catch (e) {
+            return fail(e.message === 'needs_reauth' ? 401 : 502, 'Classroom error', e.message === 'needs_reauth' ? 'needs_reauth' : 'upstream_error');
+          }
+        }
+        case 'GET /api/orders':
+          return json({ orders: await listOrders(env, owner), mail: !!(await getSetting(env, owner, 'g_refresh')) && (await mailOk(env, owner)) });
+        case 'POST /api/orders/check': {
+          let res;
+          try { res = await checkOrders(env, owner, true); } catch (e) {
+            return fail(e.message === 'needs_reauth' ? 401 : 502, 'Gmail error', e.message === 'needs_reauth' ? 'needs_reauth' : 'upstream_error');
+          }
+          return json({ ...res, orders: await listOrders(env, owner) });
+        }
+        case 'POST /api/orders/hide': {
+          let b;
+          try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
+          if (RE_ID.test(String(b?.id))) await env.DB.prepare('UPDATE orders SET hidden=1 WHERE owner=? AND id=?').bind(owner, String(b.id)).run();
+          return json({ ok: true });
         }
         case 'GET /api/gcal/events':
           return await gcalList(env, owner, url);

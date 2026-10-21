@@ -176,6 +176,21 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
 .tsec .bar{height:6px;background:var(--beige);border-radius:6px;overflow:hidden;margin:6px 0 8px}
 .tsec .bar i{display:block;height:100%;background:var(--accent);border-radius:6px}
 .tsec .fold{width:100%;text-align:left;background:none;border:1px dashed var(--line);border-radius:12px;padding:10px 14px;cursor:pointer;color:var(--mute);font:inherit}
+.ord{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 16px;margin-bottom:12px}
+.ord .oh{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.ord .shop{font:700 1.1rem Fraunces,Georgia,serif}
+.ord .item{color:var(--ink);overflow-wrap:anywhere;min-width:0}
+.ord small{color:var(--mute)}
+.ord a.btn{text-decoration:none;color:var(--ink);font-size:.85rem;padding:6px 12px}
+.ord .oact{margin-left:auto;display:flex;gap:6px}
+.steps{display:flex;gap:4px;margin:12px 0 4px}
+.steps i{flex:1;height:6px;border-radius:6px;background:var(--beige)}
+.steps i.on{background:var(--accent)}
+.steps.bad i.on{background:var(--hi)}
+.slbl{display:flex;justify-content:space-between;font-size:.72rem;color:var(--mute);letter-spacing:.03em}
+.slbl b{color:var(--ink)}
+.obadge{font-size:.78rem;font-weight:600;border-radius:999px;padding:2px 10px;background:var(--today)}
+.obadge.delivered{background:#dcebd6;color:#2f5a2a}.obadge.cancelled{background:#f6dcd6;color:#8a2f1d}
 </style>
 </head>
 <body>
@@ -193,8 +208,13 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
     <div class="card"><h2>Food</h2><div id="tFood"></div></div>
   </section>
 
+  <section id="v-orders" class="hide">
+    <div class="top"><button class="btn p" id="ordCheck">↻ Check email now</button><span class="note" id="ordNote"></span></div>
+    <div id="ordList"></div>
+  </section>
+
   <section id="v-tasks" class="hide">
-    <div class="top"><button class="btn p" id="add">＋ New task</button><label class="note"><input type="checkbox" id="showDone"> Show completed</label></div>
+    <div class="top"><button class="btn p" id="add">＋ New task</button><button class="btn" id="crBtn" hidden></button><label class="note"><input type="checkbox" id="showDone"> Show completed</label></div>
     <div class="seg" id="tview" style="margin:0 0 12px;width:max-content"></div>
     <div class="chips card" id="chips" style="padding:10px 14px"></div>
     <div class="quad" id="quad"></div>
@@ -568,7 +588,7 @@ function renderByTime(){
     var h3=document.createElement('h3');h3.textContent=s[1];var c=document.createElement('span');c.className='c';c.textContent=l.length+' open';h3.appendChild(c);sec.appendChild(h3);
     if(s[2]){var sm=document.createElement('small');sm.className='h';sm.textContent=s[2];sec.appendChild(sm)}
     if(s[0]==='td'){var tot=l.length+d.length,b=document.createElement('div');b.className='bar';var i=document.createElement('i');i.style.width=(tot?Math.round(d.length*100/tot):0)+'%';b.appendChild(i);sec.appendChild(b)}
-    if(s[4]&&!tFold[s[4]]&&l.length){var f=document.createElement('button');f.className='fold';f.textContent='Show '+l.length+' tasks';f.onclick=function(){tFold[s[4]]=true;render()};sec.appendChild(f)}
+    if(s[4]&&!tFold[s[4]]&&l.length){var f=document.createElement('button');f.className='fold';f.textContent='Show '+l.length+(l.length===1?' task':' tasks');f.onclick=function(){tFold[s[4]]=true;render()};sec.appendChild(f)}
     else{var ul=document.createElement('ul');sec.appendChild(ul);fillList(ul,l.concat(showDone?d:[]),'Nothing here')}
     box.appendChild(sec)})}
 function renderTasks(){var c=$('chips');c.innerHTML='';
@@ -695,12 +715,62 @@ function renderCal(){
   }
 }
 
-var TABS=[['today','Today'],['tasks','Tasks'],['cal','Calendar'],['food','Food']];
+
+/* ---- Google Classroom ---- */
+function refreshState(){return fetch('/api/state').then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(st){
+  if(syncBusy||syncT||document.querySelector('dialog[open]'))return;INIT=st;load();fLoad();primeSnap();render()})}
+function setupClassroom(){var b=$('crBtn');if(!CFG.gcal){b.hidden=true;return}
+  b.hidden=false;
+  if(CFG.classroom){b.textContent='🎓 Update from Classroom';b.onclick=function(){b.disabled=true;b.textContent='Checking…';
+    fetch('/api/classroom/sync',{method:'POST'}).then(function(r){return r.json().then(function(j){return {r:r,j:j}})}).then(function(x){
+      if(x.r.status===401){say('Reconnect Google to continue.');return}
+      if(!x.r.ok){say('Could not reach Classroom. Try again later.');return}
+      say(x.j.added?x.j.added+' new from Classroom':'Nothing new in Classroom');return refreshState()})
+    .catch(function(){say('Could not reach Classroom.')}).then(function(){b.disabled=false;b.textContent='🎓 Update from Classroom'})}}
+  else{b.textContent='🎓 Connect Classroom';b.onclick=function(){location.href='/api/google/connect'}}}
+
+/* ---- Orders (from Gmail) ---- */
+var ordData=null,ordBusy=false;
+var OSTEPS=[['ordered','Ordered'],['shipped','Shipped'],['out_for_delivery','Out for delivery'],['delivered','Delivered']];
+function loadOrders(){return fetch('/api/orders').then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(j){ordData=j;if(tab==='orders')renderOrders()}).catch(function(){})}
+function renderOrders(){
+  var box=$('ordList'),note=$('ordNote'),cb=$('ordCheck');box.innerHTML='';
+  if(!CFG.gcal){cb.hidden=true;note.textContent='Google is not set up yet.';return}
+  if(!CFG.mail){cb.textContent='Connect Gmail';cb.hidden=false;cb.onclick=function(){location.href='/api/google/connect'};
+    note.textContent='Allow read-only access to Gmail so orders can be found in your email.';return}
+  cb.hidden=false;cb.textContent=ordBusy?'Checking…':'↻ Check email now';cb.disabled=ordBusy;cb.onclick=checkOrdersNow;
+  note.textContent='Checked automatically every few hours when you open the app.';
+  if(!ordData){loadOrders();var l=document.createElement('div');l.className='empty';l.textContent='Loading…';box.appendChild(l);return}
+  if(!ordData.orders.length){var e=document.createElement('div');e.className='empty';e.textContent='No orders found in the last 60 days.';box.appendChild(e);return}
+  ordData.orders.forEach(function(o){
+    var c=document.createElement('div');c.className='ord';
+    var hd=document.createElement('div');hd.className='oh';
+    var s=document.createElement('span');s.className='shop';s.textContent=o.shop;hd.appendChild(s);
+    var it=document.createElement('span');it.className='item';it.textContent=o.item;hd.appendChild(it);
+    var act=document.createElement('span');act.className='oact';
+    var a=document.createElement('a');a.className='btn';a.textContent='Open email';a.target='_blank';a.rel='noopener';a.href='https://mail.google.com/mail/u/0/#all/'+encodeURIComponent(o.msg_id);act.appendChild(a);
+    var x=document.createElement('button');x.className='x';x.textContent='✕';x.title='Hide';x.setAttribute('aria-label','Hide');
+    x.onclick=function(){ordData.orders=ordData.orders.filter(function(y){return y!==o});renderOrders();fetch('/api/orders/hide',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:o.id})}).catch(function(){})};
+    act.appendChild(x);hd.appendChild(act);c.appendChild(hd);
+    var m=document.createElement('small');var d=new Date(o.updated);
+    m.textContent=(o.order_no?'Order '+o.order_no+' · ':'')+'Updated '+d.toLocaleDateString(undefined,{day:'numeric',month:'short'});c.appendChild(m);
+    if(o.status==='cancelled'){var bd=document.createElement('div');bd.style.marginTop='10px';var bb=document.createElement('span');bb.className='obadge cancelled';bb.textContent='Cancelled / refunded';bd.appendChild(bb);c.appendChild(bd)}
+    else{var idx=OSTEPS.map(function(z){return z[0]}).indexOf(o.status);
+      var st=document.createElement('div');st.className='steps';OSTEPS.forEach(function(z,i){var b=document.createElement('i');if(i<=idx)b.className='on';st.appendChild(b)});c.appendChild(st);
+      var lb=document.createElement('div');lb.className='slbl';OSTEPS.forEach(function(z,i){var sp=document.createElement(i===idx?'b':'span');sp.textContent=z[1];lb.appendChild(sp)});c.appendChild(lb)}
+    box.appendChild(c)})}
+function checkOrdersNow(){if(ordBusy)return;ordBusy=true;renderOrders();
+  fetch('/api/orders/check',{method:'POST'}).then(function(r){return r.json().then(function(j){return {r:r,j:j}})}).then(function(x){
+    if(x.r.status===401){say('Reconnect Google to continue.');return}
+    if(!x.r.ok){say('Could not reach Gmail. Try again later.');return}
+    ordData={orders:x.j.orders,mail:true};say(x.j.changed?x.j.changed+' order update(s)':'No new order emails')})
+  .catch(function(){say('Could not reach Gmail.')}).then(function(){ordBusy=false;renderOrders()})}
+var TABS=[['today','Today'],['tasks','Tasks'],['orders','Orders'],['cal','Calendar'],['food','Food']];
 
 function renderNav(){var n=$('nav');n.innerHTML='';
   TABS.forEach(function(x){var b=document.createElement('button');b.textContent=x[1];b.className=tab===x[0]?'on':'';b.onclick=function(){tab=x[0];openSn=null;render()};n.appendChild(b)});
   TABS.forEach(function(x){$('v-'+x[0]).classList.toggle('hide',tab!==x[0])})}
-function render(){renderNav();renderAlerts();if(tab==='today')renderToday();else if(tab==='tasks')renderTasks();else if(tab==='food')renderFood();else renderCal()}
+function render(){renderNav();renderAlerts();if(tab==='today')renderToday();else if(tab==='tasks')renderTasks();else if(tab==='orders')renderOrders();else if(tab==='food')renderFood();else renderCal()}
 
 TAGS.forEach(function(t){var o=document.createElement('option');o.value=t.k;o.textContent=t.n;$('tag').appendChild(o)});
 $('add').onclick=function(){openForm(null)};
@@ -892,7 +962,7 @@ if(CFG.ai){sm=aiShim;smImg=true}smTried=true;
 $('gConnect').onclick=gConnectClick;
 load();primeSnap();gMcpTried=true;if(CFG.gcal){mcp=gShim}else{gState='nomcp'}
 notifLabel();render();check();setInterval(check,15000);
-if(CFG.gcal)gWatch(true);
+if(CFG.gcal)gWatch(true);setupClassroom();
 }
 Promise.all([fetch('/api/state').then(function(r){if(!r.ok)throw 0;return r.json()}),fetch('/api/config').then(function(r){if(!r.ok)throw 0;return r.json()})]).then(function(a){boot(a[0],a[1])}).catch(function(){document.body.innerHTML='<p style="padding:24px;font-family:sans-serif">Could not load your data. Check your connection and reload.</p>'});
 </script>

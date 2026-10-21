@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   done      INTEGER NOT NULL DEFAULT 0,
   gcal      INTEGER NOT NULL DEFAULT 0,
   gcal_id   TEXT NOT NULL DEFAULT '',
+  src       TEXT NOT NULL DEFAULT '',
   updated   TEXT NOT NULL,
   PRIMARY KEY (owner, id)
 );
@@ -46,4 +47,25 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT NOT NULL,
   value TEXT NOT NULL,
   PRIMARY KEY (owner, key)
+);
+
+CREATE TABLE IF NOT EXISTS seen (
+  owner TEXT NOT NULL,
+  kind  TEXT NOT NULL,
+  key   TEXT NOT NULL,
+  PRIMARY KEY (owner, kind, key)
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+  owner    TEXT NOT NULL,
+  id       TEXT NOT NULL,
+  shop     TEXT NOT NULL,
+  item     TEXT NOT NULL DEFAULT '',
+  order_no TEXT NOT NULL DEFAULT '',
+  status   TEXT NOT NULL DEFAULT 'ordered',
+  placed   TEXT NOT NULL,
+  updated  TEXT NOT NULL,
+  msg_id   TEXT NOT NULL DEFAULT '',
+  hidden   INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (owner, id)
 );
