@@ -1,13 +1,10 @@
+# Cloudflare Pages project "amiti-website" (free *.pages.dev address).
+# Build (set in the Pages dashboard):
+#   command: mkdir -p dist && cp -r public/* dist/ && cp src/worker.js dist/_worker.js
+#   output:  dist
 name = "amiti-website"
-main = "src/worker.js"
+pages_build_output_dir = "dist"
 compatibility_date = "2025-10-01"
-
-# Static frontend. The Worker runs first for every request so it can check
-# the Cloudflare Access login before anything is served.
-[assets]
-directory = "./public"
-binding = "ASSETS"
-run_worker_first = true
 
 [[d1_databases]]
 binding = "DB"
@@ -29,6 +26,6 @@ AI_VISION_MODEL = "@cf/llava-hf/llava-1.5-7b-hf"
 # Only used if you add a paid ANTHROPIC_API_KEY:
 AI_MODEL = "claude-sonnet-5-5"
 
-# Secrets (set with `npx wrangler secret put NAME`, never put them in this file):
+# Secrets (add them in the Pages dashboard: Settings > Variables and Secrets, never in this file):
 #   APP_PASSWORD (10+ characters), GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
 #   ANTHROPIC_API_KEY is optional and costs money. Leave it unset to stay free.

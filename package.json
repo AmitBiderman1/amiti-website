@@ -4,10 +4,11 @@
   "type": "module",
   "version": "1.0.0",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler pages dev dist",
+    "build": "mkdir -p dist && cp -r public/* dist/ && cp src/worker.js dist/_worker.js",
     "db:local": "wrangler d1 execute amitis --local --file=schema.sql",
     "db:remote": "wrangler d1 execute amitis --remote --file=schema.sql",
-    "deploy": "wrangler deploy"
+    "deploy": "npm run build && wrangler pages deploy dist"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
