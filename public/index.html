@@ -733,6 +733,11 @@ function setupClassroom(){var b=$('crBtn');if(!CFG.gcal){b.hidden=true;return}
 /* ---- Orders (from Gmail) ---- */
 var ordData=null,ordBusy=false;
 var OSTEPS=[['ordered','Ordered'],['shipped','Shipped'],['out_for_delivery','Out for delivery'],['delivered','Delivered']];
+function oSteps(s){var o=OSTEPS.map(function(z){return z.slice()});
+  if(s==='ready_for_pickup'){o[2]=['ready_for_pickup','Ready for pickup']}
+  if(s==='collected'){o[2]=['ready_for_pickup','Ready for pickup'];o[3]=['collected','Picked up']}
+  return o}
+function oIdx(o,s){var i=o.map(function(z){return z[0]}).indexOf(s);return i}
 function loadOrders(){return fetch('/api/orders').then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(j){ordData=j;if(tab==='orders')renderOrders()}).catch(function(){})}
 function renderOrders(){
   var box=$('ordList'),note=$('ordNote'),cb=$('ordCheck');box.innerHTML='';
@@ -756,9 +761,9 @@ function renderOrders(){
     var m=document.createElement('small');var d=new Date(o.updated);
     m.textContent=(o.order_no?'Order '+o.order_no+' · ':'')+'Updated '+d.toLocaleDateString(undefined,{day:'numeric',month:'short'});c.appendChild(m);
     if(o.status==='cancelled'){var bd=document.createElement('div');bd.style.marginTop='10px';var bb=document.createElement('span');bb.className='obadge cancelled';bb.textContent='Cancelled / refunded';bd.appendChild(bb);c.appendChild(bd)}
-    else{var idx=OSTEPS.map(function(z){return z[0]}).indexOf(o.status);
-      var st=document.createElement('div');st.className='steps';OSTEPS.forEach(function(z,i){var b=document.createElement('i');if(i<=idx)b.className='on';st.appendChild(b)});c.appendChild(st);
-      var lb=document.createElement('div');lb.className='slbl';OSTEPS.forEach(function(z,i){var sp=document.createElement(i===idx?'b':'span');sp.textContent=z[1];lb.appendChild(sp)});c.appendChild(lb)}
+    else{var OS=oSteps(o.status),idx=oIdx(OS,o.status);
+      var st=document.createElement('div');st.className='steps';OS.forEach(function(z,i){var b=document.createElement('i');if(i<=idx)b.className='on';st.appendChild(b)});c.appendChild(st);
+      var lb=document.createElement('div');lb.className='slbl';OS.forEach(function(z,i){var sp=document.createElement(i===idx?'b':'span');sp.textContent=z[1];lb.appendChild(sp)});c.appendChild(lb)}
     box.appendChild(c)})}
 function checkOrdersNow(){if(ordBusy)return;ordBusy=true;renderOrders();
   fetch('/api/orders/check',{method:'POST'}).then(function(r){return r.json().then(function(j){return {r:r,j:j}})}).then(function(x){

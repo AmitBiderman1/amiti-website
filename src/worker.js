@@ -731,17 +731,21 @@ async function syncClassroom(env, owner, force = false) {
 
 /* Gmail: find order emails and keep a small table of orders (no email bodies are stored). */
 
-const STATUS_RANK = { ordered: 1, shipped: 2, out_for_delivery: 3, delivered: 4, cancelled: 9 };
+const STATUS_RANK = { ordered: 1, shipped: 2, out_for_delivery: 3, ready_for_pickup: 3, delivered: 4, collected: 5, cancelled: 9 };
 const STATUS_RULES = [
   ['cancelled', /cancel|refund|בוטל|ביטול הזמנה|זיכוי/i],
-  ['delivered', /delivered|נמסר|נמסרה|הגיעה ליעד|ready for pickup|מוכנה לאיסוף/i],
+  ['collected', /picked up|has been collected|was collected|thank you for (?:picking|collecting)|נאספה|נאסף|נלקחה|נלקח|אישור איסוף|איסוף הושלם|תודה שאספת/i],
+  ['delivered', /delivered|נמסר|נמסרה|הגיעה ליעד/i],
+  ['ready_for_pickup', /ready for pick-?up|ready to collect|available for pick-?up|מוכנה? לאיסוף|ממתינה? לאיסוף|ניתן לאסוף|הגיעה לנקודת/i],
   ['out_for_delivery', /out for delivery|arriving today|בדרך אליך|יצא(?:ה)? לחלוקה|יצא(?:ה)? למשלוח|שליח בדרך/i],
   ['shipped', /shipped|has shipped|on its way|shipment|tracking|נשלח|נשלחה|יצא(?:ה)? לדרך|מספר מעקב/i],
-  ['ordered', /order confirm|thank you for your order|order received|we received your order|your order|הזמנה התקבלה|אישור הזמנה|תודה על ההזמנה|ההזמנה שלך|קיבלנו את ההזמנה/i],
+  ['ordered', /order confirm|thank you for your order|order received|we received your order|order #?\S* confirmed|your order|הזמנה התקבלה|אישור הזמנה|תודה על ההזמנה|ההזמנה שלך|קיבלנו את ההזמנה|הזמנה \S* אושרה|אושרה/i],
 ];
-function classifyOrder(text) {
-  for (const [s, re] of STATUS_RULES) if (re.test(text)) return s;
-  return null;
+// The subject decides the status. The preview text is only a fallback, because confirmation emails
+// often mention "delivery" in the small print.
+function classifyOrder(subject, snippet) {
+  const pick = (t) => { for (const [s, re] of STATUS_RULES) if (re.test(t)) return s; return null; };
+  return pick(subject) || pick(snippet.slice(0, 200));
 }
 function shopFrom(from) {
   let n = (/^\s*"?([^"<]+?)"?\s*</.exec(from) || [])[1] || '';
@@ -755,9 +759,9 @@ function shopFrom(from) {
   return n.slice(0, 60);
 }
 function orderNo(text) {
-  const re = /(?:order|הזמנה|הזמנתך)\s*(?:#|no\.?|number|מספר|:)?\s*#?\s*([A-Z0-9][A-Z0-9-]{4,24})/gi;
+  const re = /(?:order|הזמנה|הזמנתך)(?:\s*(?:#|no\.?|number|מספר|:))*\s*#?\s*([A-Z0-9][A-Z0-9-]{2,24})/gi;
   for (const m of text.matchAll(re)) if (/\d/.test(m[1])) return m[1];
-  const h = /#\s*([A-Z0-9][A-Z0-9-]{4,24})/i.exec(text);
+  const h = /#\s*([A-Z0-9][A-Z0-9-]{2,24})/i.exec(text);
   return h && /\d/.test(h[1]) ? h[1] : '';
 }
 function mailText(payload) {
@@ -808,23 +812,32 @@ async function checkOrders(env, owner, force = false) {
   for (const id of fresh.slice(0, 25)) {
     const m = await gGet(env, owner, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`);
     const h = (n) => ((m.payload?.headers || []).find((x) => x.name.toLowerCase() === n) || {}).value || '';
-    msgs.push({ id, subject: h('subject'), from: h('from'), date: Number(m.internalDate) || Date.now(), snippet: m.snippet || '', body: mailText(m.payload) });
+    msgs.push({ id, sent: (m.labelIds || []).includes('SENT') || (m.labelIds || []).includes('DRAFT'), subject: h('subject'), from: h('from'), date: Number(m.internalDate) || Date.now(), snippet: m.snippet || '', body: mailText(m.payload) });
   }
   msgs.sort((a, b) => a.date - b.date);
   for (const m of msgs) {
     await markSeen(env, owner, 'mail', m.id);
-    const status = classifyOrder(m.subject + ' ' + m.snippet.slice(0, 200));
+    if (m.sent || /^\s*(re|fwd?|fw|השב|תגובה|הועבר)\s*:/i.test(m.subject)) continue; // your own replies and forwards
+    const status = classifyOrder(m.subject, m.snippet);
     if (!status) continue;
     const shop = shopFrom(m.from);
     const no = orderNo(m.subject) || orderNo(m.snippet + ' ' + m.body);
     const placed = new Date(m.date).toISOString();
     let ex = null;
-    if (no) ex = await env.DB.prepare('SELECT * FROM orders WHERE owner=? AND shop=? AND order_no=?').bind(owner, shop, no).first();
-    else ex = await env.DB.prepare("SELECT * FROM orders WHERE owner=? AND shop=? AND status NOT IN ('delivered','cancelled') ORDER BY placed DESC LIMIT 1").bind(owner, shop).first();
+    const open = "status NOT IN ('delivered','collected','cancelled')";
+    if (no) {
+      ex = await env.DB.prepare('SELECT * FROM orders WHERE owner=? AND shop=? AND order_no=?').bind(owner, shop, no).first();
+      // an earlier email of this order had no number: adopt it instead of creating a duplicate
+      if (!ex) ex = await env.DB.prepare(`SELECT * FROM orders WHERE owner=? AND shop=? AND order_no='' AND ${open} ORDER BY placed DESC LIMIT 1`).bind(owner, shop).first();
+    } else {
+      ex = await env.DB.prepare(`SELECT * FROM orders WHERE owner=? AND shop=? AND ${open} ORDER BY placed DESC LIMIT 1`).bind(owner, shop).first();
+    }
     if (ex) {
       if ((STATUS_RANK[status] || 0) > (STATUS_RANK[ex.status] || 0) || status === 'cancelled') {
-        await env.DB.prepare('UPDATE orders SET status=?,updated=?,msg_id=?,hidden=0 WHERE owner=? AND id=?').bind(status, placed, m.id, owner, ex.id).run();
+        await env.DB.prepare('UPDATE orders SET status=?,updated=?,msg_id=?,order_no=?,hidden=0 WHERE owner=? AND id=?').bind(status, placed, m.id, ex.order_no || no, owner, ex.id).run();
         changed++;
+      } else if (no && !ex.order_no) {
+        await env.DB.prepare('UPDATE orders SET order_no=? WHERE owner=? AND id=?').bind(no, owner, ex.id).run();
       }
       continue;
     }
