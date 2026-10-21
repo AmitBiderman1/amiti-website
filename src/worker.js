@@ -433,27 +433,46 @@ async function aiClaude(env, merged, images) {
 }
 
 // Free option: Cloudflare Workers AI (daily free allowance, no card needed).
+// Workers AI retired the old Llama 3.1 8B / LLaVA models on 2026-05-30, so try current models in order.
+const TEXT_MODELS = ['@cf/meta/llama-3.1-8b-instruct-fast', '@cf/google/gemma-4-26b-a4b-it', '@cf/zai-org/glm-4.7-flash'];
+const VISION_MODELS = ['@cf/google/gemma-4-26b-a4b-it', '@cf/moonshotai/kimi-k2.6'];
+const RETIRED = /llama-3\.1-8b-instruct$|llava-1\.5|llama-3-8b|llama-3\.1-70b|gemma-3-12b|mistral-7b|uform/i;
+
+function aiText(out) {
+  const c = out?.choices?.[0]?.message?.content;
+  const t = out?.response ?? c ?? out?.result?.response ?? out?.description ?? '';
+  return String(Array.isArray(t) ? t.map((x) => x?.text || '').join('') : t);
+}
+
 async function aiWorkers(env, merged, images) {
-  try {
-    let out;
-    if (images.length) {
-      const bin = atob(images[0].data);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      const prompt = merged.map((m) => (m.role === 'user' ? 'User: ' : 'Assistant: ') + m.content).join('\n\n').slice(-6000);
-      out = await env.AI.run(env.AI_VISION_MODEL || '@cf/llava-hf/llava-1.5-7b-hf', { prompt, image: Array.from(bytes), max_tokens: 1024 });
-    } else {
-      out = await env.AI.run(env.AI_TEXT_MODEL || '@cf/meta/llama-3.1-8b-instruct', { messages: merged, max_tokens: 1500 });
+  const wanted = images.length ? env.AI_VISION_MODEL : env.AI_TEXT_MODEL;
+  const models = [...new Set([wanted && !RETIRED.test(wanted) ? wanted : null, ...(images.length ? VISION_MODELS : TEXT_MODELS)].filter(Boolean))];
+  const errors = [];
+  for (const model of models) {
+    try {
+      let input;
+      if (images.length) {
+        const url = `data:${images[0].media_type};base64,${images[0].data}`;
+        const msgs = merged.map((m, i) => (i === merged.length - 1
+          ? { role: 'user', content: [{ type: 'text', text: m.content }, { type: 'image_url', image_url: { url } }] }
+          : m));
+        input = { messages: msgs, max_tokens: 1200 };
+      } else {
+        input = { messages: merged, max_tokens: 1500 };
+      }
+      const text = aiText(await env.AI.run(model, input));
+      if (text) return json({ text, truncated: false });
+      errors.push(model.split('/').pop() + ': empty');
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      console.error('workers ai error', model, msg);
+      if (/limit|quota|neuron|429|capacity/i.test(msg) && !/not found|deprecat|no such model/i.test(msg)) {
+        return fail(429, 'Free daily AI limit reached', 'rate_limited');
+      }
+      errors.push(model.split('/').pop() + ': ' + msg.replace(/\s+/g, ' ').slice(0, 90));
     }
-    const text = String(out?.response ?? out?.description ?? out?.choices?.[0]?.message?.content ?? '');
-    if (!text) return fail(502, 'Empty AI answer', 'upstream_error');
-    return json({ text, truncated: false });
-  } catch (e) {
-    const msg = String((e && e.message) || e);
-    console.error('workers ai error', msg);
-    if (/limit|quota|neuron|429/i.test(msg)) return fail(429, 'Free daily AI limit reached', 'rate_limited');
-    return fail(502, 'AI request failed', 'upstream_error');
   }
+  return json({ error: 'AI request failed', code: 'upstream_error', detail: errors.join(' | ').slice(0, 300) }, 502);
 }
 
 /* ---------- Google Calendar (OAuth + API) ---------- */
@@ -757,17 +776,21 @@ function mailText(payload) {
 }
 async function aiItem(env, shop, subject, body) {
   if (!env.AI) return '';
-  try {
-    const r = await env.AI.run(env.AI_TEXT_MODEL || '@cf/meta/llama-3.1-8b-instruct', {
-      max_tokens: 60,
-      messages: [
-        { role: 'system', content: 'You read one order email. Reply with ONLY the name of the main product ordered, under 8 words, in the email language. If unclear reply NONE.' },
-        { role: 'user', content: `Shop: ${shop}\nSubject: ${subject}\n${body.slice(0, 1500)}` },
-      ],
-    });
-    const t = String(r.response || '').split('\n')[0].replace(/^["'\s]+|["'\s.]+$/g, '').slice(0, 80);
-    return /^none$/i.test(t) ? '' : t;
-  } catch { return ''; }
+  const models = [...new Set([env.AI_TEXT_MODEL && !RETIRED.test(env.AI_TEXT_MODEL) ? env.AI_TEXT_MODEL : null, ...TEXT_MODELS].filter(Boolean))];
+  for (const model of models) {
+    try {
+      const r = await env.AI.run(model, {
+        max_tokens: 60,
+        messages: [
+          { role: 'system', content: 'You read one order email. Reply with ONLY the name of the main product ordered, under 8 words, in the email language. If unclear reply NONE.' },
+          { role: 'user', content: `Shop: ${shop}\nSubject: ${subject}\n${body.slice(0, 1500)}` },
+        ],
+      });
+      const t = aiText(r).split('\n')[0].replace(/^["'\s]+|["'\s.]+$/g, '').slice(0, 80);
+      return /^none$/i.test(t) ? '' : t;
+    } catch { /* try the next model */ }
+  }
+  return '';
 }
 
 async function checkOrders(env, owner, force = false) {

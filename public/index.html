@@ -371,7 +371,7 @@ if(CFG.ai){
     var imgs=opts.images?(Array.isArray(opts.images)?opts.images:[opts.images]):[];
     return Promise.all(imgs.map(b64)).then(function(d){
       return fetch('/api/ai',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:msgs,images:d.map(function(x){return {media_type:'image/jpeg',data:x}})})})})
-    .then(function(r){return r.json().catch(function(){return {}}).then(function(j){if(!r.ok)throw {code:j.code||(r.status===429?'rate_limited':'upstream_error'),message:j.error||''};return j})})
+    .then(function(r){return r.json().catch(function(){return {}}).then(function(j){if(!r.ok)throw {code:j.code||(r.status===429?'rate_limited':'upstream_error'),message:j.error||'',detail:j.detail||''};return j})})
     .then(function(j){if(opts.onText){try{opts.onText({text:j.text,delta:j.text})}catch(e){}}return {text:j.text,truncated:!!j.truncated}})};
   aiShim=function(input,opts){return aiCall(input,opts)};
   aiShim.json=function(input,opts){return aiCall(input,opts).then(function(r){var v=parseJ(r.text);if(v===undefined)throw {code:'invalid_json',text:r.text};return v})};
@@ -820,7 +820,7 @@ function aiErr(e){var c=e&&e.code;
   if(c==='invalid_json')return 'Could not read the answer. Try describing it a bit differently.';
   if(c==='cancelled')return '';
   if(c==='images_unavailable'||c==='image_rejected')return 'This photo could not be sent. Try another one.';
-  return 'The AI could not answer right now. Try again in a moment.'}
+  return 'The AI could not answer right now. Try again in a moment.'+(e&&e.detail?' ['+e.detail+']':'')}
 function fstat(t){$('fstat').textContent=t||''}
 function toItems(a){if(a&&!Array.isArray(a)&&Array.isArray(a.items))a=a.items;if(!Array.isArray(a))return [];
   return a.filter(function(x){return x&&x.name}).slice(0,30).map(function(x){return {name:String(x.name).slice(0,120),portion:x.portion?String(x.portion).slice(0,60):'',kcal:Math.round(num(x.kcal)),p:r1(num(x.protein!==undefined?x.protein:x.p)),c:r1(num(x.carbs!==undefined?x.carbs:x.c)),f:r1(num(x.fat!==undefined?x.fat:x.f)),on:true}})}

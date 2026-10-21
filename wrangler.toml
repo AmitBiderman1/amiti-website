@@ -20,9 +20,9 @@ TIMEZONE = "Asia/Jerusalem"
 # Optional: only if you protect the app with Cloudflare Access instead of a password (see README).
 TEAM_DOMAIN = ""
 ACCESS_AUD = ""
-# Optional model overrides (check the Workers AI model list in the Cloudflare dashboard if one is retired).
-AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
-AI_VISION_MODEL = "@cf/llava-hf/llava-1.5-7b-hf"
+# Optional model overrides (Workers AI retired the old Llama 3.1 8B and LLaVA models on 2026-05-30; check the model list in the Cloudflare dashboard if one is retired).
+AI_TEXT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
+AI_VISION_MODEL = "@cf/google/gemma-4-26b-a4b-it"
 # Only used if you add a paid ANTHROPIC_API_KEY:
 AI_MODEL = "claude-sonnet-5-5"
 
