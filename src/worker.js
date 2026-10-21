@@ -157,13 +157,13 @@ const delSetting = (env, owner, key) =>
 async function getState(env, owner) {
   const cutoff = new Date(Date.now() - 120 * 86400000).toISOString().slice(0, 10);
   const [t, f, m, goal] = await Promise.all([
-    env.DB.prepare('SELECT id,text,due,dur,snooze,fired,tag,urgent,important,done,gcal FROM tasks WHERE owner=?').bind(owner).all(),
+    env.DB.prepare('SELECT id,text,due,dur,snooze,fired,tag,urgent,important,done,gcal_id FROM tasks WHERE owner=?').bind(owner).all(),
     env.DB.prepare('SELECT id,day,slot,name,kcal,p,c,f FROM food WHERE owner=? AND day>=?').bind(owner, cutoff).all(),
     env.DB.prepare('SELECT id,name,servings,ing FROM meals WHERE owner=?').bind(owner).all(),
     getSetting(env, owner, 'goal'),
   ]);
   return {
-    tasks: t.results.map((r) => ({ ...r, urgent: !!r.urgent, important: !!r.important, done: !!r.done, gcal: !!r.gcal })),
+    tasks: t.results.map(({ gcal_id, ...r }) => ({ ...r, urgent: !!r.urgent, important: !!r.important, done: !!r.done, gcal: !!gcal_id })),
     food: f.results,
     meals: m.results.map((r) => {
       let ing = [];
@@ -179,6 +179,8 @@ async function applySync(env, owner, b) {
   const stmts = [];
   const now = new Date().toISOString();
   const list = (x, n = 500) => (Array.isArray(x) ? x.slice(0, n) : []);
+  const calTasks = [];
+  const taskDels = [];
 
   for (const t of list(b.tasks?.upsert)) {
     if (!t || !RE_ID.test(String(t.id))) continue;
@@ -186,20 +188,27 @@ async function applySync(env, owner, b) {
     if (!text) continue;
     stmts.push(
       db.prepare(
-        `INSERT INTO tasks(owner,id,text,due,dur,snooze,fired,tag,urgent,important,done,gcal,updated)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+        `INSERT INTO tasks(owner,id,text,due,dur,snooze,fired,tag,urgent,important,done,updated)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(owner,id) DO UPDATE SET text=excluded.text,due=excluded.due,dur=excluded.dur,snooze=excluded.snooze,
            fired=excluded.fired,tag=excluded.tag,urgent=excluded.urgent,important=excluded.important,done=excluded.done,
-           gcal=excluded.gcal,updated=excluded.updated`
+           updated=excluded.updated`
       ).bind(
         owner, String(t.id), text, dt(t.due), Math.round(num(t.dur, 5, 1440, 30)), dt(t.snooze), dt(t.fired),
-        TAGS.includes(t.tag) ? t.tag : 'priv', bit(t.urgent), bit(t.important), bit(t.done), bit(t.gcal), now
+        TAGS.includes(t.tag) ? t.tag : 'priv', bit(t.urgent), bit(t.important), bit(t.done), now
       )
     );
+    calTasks.push({ id: String(t.id), text, due: dt(t.due), dur: Math.round(num(t.dur, 5, 1440, 30)), tag: TAGS.includes(t.tag) ? t.tag : 'priv', done: !!t.done });
   }
   for (const id of list(b.tasks?.del)) {
-    if (RE_ID.test(String(id))) stmts.push(db.prepare('DELETE FROM tasks WHERE owner=? AND id=?').bind(owner, String(id)));
+    if (RE_ID.test(String(id))) {
+      taskDels.push(String(id));
+      stmts.push(db.prepare('DELETE FROM tasks WHERE owner=? AND id=?').bind(owner, String(id)));
+    }
   }
+
+  // Remember the calendar event ids before the rows change.
+  const before = await existingTasks(env, owner, [...calTasks.map((t) => t.id), ...taskDels]);
 
   for (const e of list(b.food?.upsert)) {
     if (!e || !RE_ID.test(String(e.id)) || !RE_DAY.test(String(e.day))) continue;
@@ -247,8 +256,130 @@ async function applySync(env, owner, b) {
 
   // D1 batches run as one transaction; keep chunks modest.
   for (let i = 0; i < stmts.length; i += 90) await db.batch(stmts.slice(i, i + 90));
-  return stmts.length;
+  let gcal = {};
+  try { gcal = await calendarSideEffects(env, owner, before, calTasks, taskDels); } catch (e) { console.error('calendar sync', e && e.message); }
+  return { n: stmts.length, gcal };
 }
+
+/* ---------- tasks with a time go to Google Calendar automatically ---------- */
+
+const TAG_NAMES = { home: 'Home tasks', mil: 'Military', priv: 'Private', fam: 'Friends and family' };
+const RE_GID = /^[A-Za-z0-9_-]{1,200}$/;
+
+async function existingTasks(env, owner, ids) {
+  const m = new Map();
+  const uniq = [...new Set(ids)];
+  for (let i = 0; i < uniq.length; i += 80) {
+    const part = uniq.slice(i, i + 80);
+    const r = await env.DB.prepare(
+      `SELECT id,text,due,dur,tag,gcal_id FROM tasks WHERE owner=? AND id IN (${part.map(() => '?').join(',')})`
+    ).bind(owner, ...part).all();
+    for (const row of r.results) m.set(row.id, row);
+  }
+  return m;
+}
+
+function addMinutes(local, mins) {
+  const [d, t] = local.split('T');
+  const [y, mo, da] = d.split('-').map(Number);
+  const [h, mi] = t.split(':').map(Number);
+  const x = new Date(Date.UTC(y, mo - 1, da, h, mi + mins));
+  const p = (n) => String(n).padStart(2, '0');
+  return `${x.getUTCFullYear()}-${p(x.getUTCMonth() + 1)}-${p(x.getUTCDate())}T${p(x.getUTCHours())}:${p(x.getUTCMinutes())}:00`;
+}
+
+function taskEventBody(env, t) {
+  const tz = env.TIMEZONE || 'Asia/Jerusalem';
+  return {
+    summary: t.text,
+    description: TAG_NAMES[t.tag] || '',
+    start: { dateTime: t.due + ':00', timeZone: tz },
+    end: { dateTime: addMinutes(t.due, t.dur), timeZone: tz },
+    reminders: { useDefault: true },
+    extendedProperties: { private: { amitisTask: t.id } },
+  };
+}
+
+// One Calendar API call. Returns {skip:true} when Google is not connected yet.
+async function calCall(env, owner, method, path, body) {
+  if (!gConfigured(env)) return { skip: true };
+  let token;
+  try { token = await googleToken(env, owner); } catch { return { ok: false, status: 0 }; }
+  if (!token) return { skip: true };
+  const r = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events' + path, {
+    method,
+    headers: { authorization: 'Bearer ' + token, ...(body ? { 'content-type': 'application/json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (r.status === 401) await delSetting(env, owner, 'g_access');
+  let j = null;
+  if (r.status !== 204) { try { j = await r.json(); } catch { /* ignore */ } }
+  return { ok: r.ok, status: r.status, json: j };
+}
+
+const setGid = (env, owner, id, gid) =>
+  env.DB.prepare('UPDATE tasks SET gcal_id=? WHERE owner=? AND id=?').bind(gid, owner, id).run();
+
+// Creates or updates the event. Returns the event id, or '' when it could not be done.
+async function pushTaskToCalendar(env, owner, t, gid) {
+  if (gid) {
+    const r = await calCall(env, owner, 'PATCH', '/' + encodeURIComponent(gid), taskEventBody(env, t));
+    if (r.skip) return gid;
+    if (r.ok) return gid;
+    if (r.status !== 404 && r.status !== 410) return gid; // temporary failure: keep the link
+  }
+  const r = await calCall(env, owner, 'POST', '', taskEventBody(env, t));
+  if (r.ok && r.json && RE_GID.test(String(r.json.id))) {
+    await setGid(env, owner, t.id, r.json.id);
+    return r.json.id;
+  }
+  return '';
+}
+
+async function calendarSideEffects(env, owner, before, upserts, dels) {
+  const out = {};
+  for (const id of dels) {
+    const gid = before.get(id)?.gcal_id;
+    if (gid) await calCall(env, owner, 'DELETE', '/' + encodeURIComponent(gid));
+  }
+  let budget = 25;
+  for (const t of upserts) {
+    const old = before.get(t.id);
+    const gid = old?.gcal_id || '';
+    if (!t.due) { // time removed: take it off the calendar
+      if (gid) {
+        const r = await calCall(env, owner, 'DELETE', '/' + encodeURIComponent(gid));
+        if (r.skip || r.ok || r.status === 404 || r.status === 410) await setGid(env, owner, t.id, '');
+        else { out[t.id] = true; continue; }
+      }
+      out[t.id] = false;
+      continue;
+    }
+    if (t.done) { out[t.id] = !!gid; continue; } // done tasks keep their past event
+    const same = gid && old && old.text === t.text && old.due === t.due && old.dur === t.dur && old.tag === t.tag;
+    if (same || budget <= 0) { out[t.id] = !!gid; continue; }
+    budget--;
+    out[t.id] = !!(await pushTaskToCalendar(env, owner, t, gid));
+  }
+  return out;
+}
+
+const localToday = (env) => new Date().toLocaleDateString('sv-SE', { timeZone: env.TIMEZONE || 'Asia/Jerusalem' });
+
+// Adds events for upcoming timed tasks that have none yet (Google was not connected, or an earlier call failed).
+async function reconcileCalendar(env, owner, limit = 10) {
+  try {
+    if (!gConfigured(env) || !(await getSetting(env, owner, 'g_refresh'))) return 0;
+    const r = await env.DB.prepare(
+      "SELECT id,text,due,dur,tag FROM tasks WHERE owner=? AND done=0 AND due<>'' AND gcal_id='' AND due>=? ORDER BY due LIMIT ?"
+    ).bind(owner, localToday(env) + 'T00:00', limit).all();
+    let n = 0;
+    for (const row of r.results) if (await pushTaskToCalendar(env, owner, row, '')) n++;
+    return n;
+  } catch (e) { console.error('reconcile', e && e.message); return 0; }
+}
+
+const background = (ctx, p) => (ctx && ctx.waitUntil ? ctx.waitUntil(p) : p);
 
 /* ---------- Claude (Anthropic API) proxy ---------- */
 
@@ -487,7 +618,7 @@ async function gcalCreate(req, env, owner) {
 /* ---------- router ---------- */
 
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const url = new URL(req.url);
     if (!(env.TEAM_DOMAIN && env.ACCESS_AUD) && pwMode(env)) {
       if (url.pathname === '/login' && req.method === 'GET') {
@@ -511,20 +642,26 @@ export default {
           const connected = !!(await getSetting(env, owner, 'g_refresh'));
           return json({ ai: aiEnabled(env), gcal: gConfigured(env), gconnected: connected, tz: env.TIMEZONE || 'Asia/Jerusalem' });
         }
-        case 'GET /api/state':
-          return json(await getState(env, owner));
+        case 'GET /api/state': {
+          const st = await getState(env, owner);
+          if (st.tasks.some((t) => t.due && !t.done && !t.gcal)) await background(ctx, reconcileCalendar(env, owner));
+          return json(st);
+        }
         case 'POST /api/sync': {
           let b;
           try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
-          const n = await applySync(env, owner, b || {});
-          return json({ ok: true, n });
+          const res = await applySync(env, owner, b || {});
+          return json({ ok: true, n: res.n, gcal: res.gcal });
         }
         case 'POST /api/ai':
           return await handleAi(req, env);
         case 'GET /api/google/connect':
           return await googleConnect(req, env, url);
-        case 'GET /api/google/callback':
-          return await googleCallback(req, env, url, owner);
+        case 'GET /api/google/callback': {
+          const resp = await googleCallback(req, env, url, owner);
+          await background(ctx, reconcileCalendar(env, owner, 25));
+          return resp;
+        }
         case 'GET /api/gcal/events':
           return await gcalList(env, owner, url);
         case 'POST /api/gcal/events':

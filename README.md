@@ -51,6 +51,14 @@ Until `APP_PASSWORD` is set, the deployed app refuses every request (503), so no
 Already on: `wrangler.toml` has `[ai] binding = "AI"`. Nothing to configure.
 If a model has been retired, pick another from the Workers AI list in the dashboard and change `AI_TEXT_MODEL` / `AI_VISION_MODEL`.
 
+## Google Calendar sync for tasks
+
+Every task that has a time is added to Google Calendar automatically (no manual button, no opt-out). A task without a time
+stays only in the app. Changing the title, time, duration or tag updates the event, clearing the time removes the event,
+and deleting the task deletes the event. A task you mark done keeps its past event.
+If Google is not connected yet, upcoming timed tasks are added as soon as it is. The event id lives in the `gcal_id`
+column. On an existing database run `migrations/001_gcal_id.sql` once (before deploying this version).
+
 ## Automatic deploys from Git
 
 Push this folder to a GitHub repo, then in Cloudflare: Workers & Pages → Create → Import a repository → pick the repo.

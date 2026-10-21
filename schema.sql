@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   important INTEGER NOT NULL DEFAULT 0,
   done      INTEGER NOT NULL DEFAULT 0,
   gcal      INTEGER NOT NULL DEFAULT 0,
+  gcal_id   TEXT NOT NULL DEFAULT '',
   updated   TEXT NOT NULL,
   PRIMARY KEY (owner, id)
 );

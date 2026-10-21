@@ -262,7 +262,8 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
   <form id="form">
     <h2 id="dlgTitle">New task</h2>
     <input type="text" id="text" placeholder="What needs doing?" required maxlength="200" autocomplete="off">
-    <label>Due <input type="datetime-local" id="due"></label>
+    <label>Time (optional) <input type="datetime-local" id="due"></label>
+    <div class="note" id="calNote">A task with a time is added to Google Calendar automatically.</div>
     <label>Duration <select id="dur"><option value="15">15 min</option><option value="30" selected>30 min</option><option value="45">45 min</option><option value="60">1 h</option><option value="90">1 h 30 min</option><option value="120">2 h</option><option value="180">3 h</option><option value="240">4 h</option></select></label>
     <div class="fr" style="align-items:center"><button type="button" class="btn" id="sugBtn">✨ Suggest a time</button><span class="note" id="sugNote" role="status"></span></div>
     <div id="sugList"></div>
@@ -311,9 +312,13 @@ function doSync(){syncT=null;if(syncBusy){syncDirty=true;return}
   if(food.goal!==snap.goal){body.goal=food.goal;n++}
   if(!n)return;syncBusy=true;
   fetch('/api/sync',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
-    .then(function(r){if(!r.ok)throw new Error('http');snap=next;failN=0})
+    .then(function(r){if(!r.ok)throw new Error('http');snap=next;failN=0;return r.json().catch(function(){return {}})})
+    .then(function(res){applyGcal(res&&res.gcal)})
     .catch(function(){failN++;syncDirty=true;say('Could not save. Retrying…')})
     .then(function(){syncBusy=false;if(syncDirty){syncDirty=false;clearTimeout(syncT);syncT=setTimeout(doSync,failN?Math.min(30000,2000*failN):350)}})}
+function applyGcal(m){if(!m)return;var ch=false;
+  tasks.forEach(function(t){if(!(t.id in m))return;var v=!!m[t.id];if(!!t.gcal!==v){t.gcal=v;ch=true;if(snap.tasks[t.id])snap.tasks[t.id]=JSON.stringify(t)}});
+  if(ch){render();try{if(mcp)mcp.invalidate('x','list_events')}catch(e){}}}
 document.addEventListener('visibilitychange',function(){
   if(document.visibilityState!=='visible'||syncBusy||syncT||document.querySelector('dialog[open]'))return;
   fetch('/api/state').then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(st){
@@ -410,9 +415,10 @@ function fillList(ul,arr,emptyMsg){ul.innerHTML='';
     x.onclick=function(){tasks=tasks.filter(function(y){return y!==t});save();render()};
     r.appendChild(c);r.appendChild(p);r.appendChild(d);
     if(t.due&&!t.done){
-      if(t.gcal){var gd=document.createElement('span');gd.className='x ok';gd.textContent='✓📅';gd.title='In Google Calendar';r.appendChild(gd)}
-      else if(mcp&&gState!=='missing'&&gState!=='denied'){var gb=document.createElement('button');gb.className='x';gb.textContent='📅';gb.title='Add to Google Calendar';gb.setAttribute('aria-label','Add to Google Calendar');gb.onclick=(function(tt,bb){return function(){gAdd(tt,bb)}})(t,gb);r.appendChild(gb)}
-      else{var g=document.createElement('a');g.className='x';g.textContent='📅';g.title='Add to Google Calendar';g.target='_blank';g.rel='noopener';g.href=gcal(t);r.appendChild(g)}}
+      var gd=document.createElement('span');gd.className='x'+(t.gcal?' ok':'');
+      gd.textContent=t.gcal?'✓📅':'⏳📅';
+      gd.title=t.gcal?'In Google Calendar':(CFG.gconnected?'Being added to Google Calendar':'Will be added to Google Calendar once it is connected');
+      r.appendChild(gd)}
     var dp=document.createElement('button');dp.className='x';dp.textContent='⧉';dp.title='Duplicate';dp.setAttribute('aria-label','Duplicate task');dp.onclick=function(){openForm(t,true)};
     r.appendChild(dp);
     if(!t.done)r.appendChild(z2);r.appendChild(x);li.appendChild(r);
@@ -425,9 +431,6 @@ function fillList(ul,arr,emptyMsg){ul.innerHTML='';
       li.appendChild(sn)}
     ul.appendChild(li)})}
 function byTime(a,b){if(a.done!==b.done)return a.done?1:-1;var x=eff(a)||'9',y=eff(b)||'9';return x<y?-1:x>y?1:0}
-function gcal(t){var st=new Date(t.due),en=new Date(st.getTime()+durMs(t));
-  function f(d){return d.getFullYear()+p2(d.getMonth()+1)+p2(d.getDate())+'T'+p2(d.getHours())+p2(d.getMinutes())+'00'}
-  return 'https://calendar.google.com/calendar/render?action=TEMPLATE&text='+encodeURIComponent(t.text)+'&dates='+f(st)+'/'+f(en)+'&details='+encodeURIComponent(tag(t.tag).n)}
 function gWin(){var st=new Date(view.getFullYear(),view.getMonth(),1-view.getDay());var en=new Date(st.getFullYear(),st.getMonth(),st.getDate()+42);
   return {startTime:isoD(st)+'T00:00:00',endTime:isoD(en)+'T00:00:00',orderBy:'startTime',pageSize:250}}
 function gNorm(list){var m={};
@@ -455,12 +458,6 @@ function gWatch(force){if(!mcp)return;var w=gWin(),key=w.startTime;
   if(!force&&key===gKey)return;gKey=key;if(gUnsub){try{gUnsub()}catch(e){}gUnsub=null}
   try{gUnsub=mcp.watchTool(GS,'list_events',w,function(ev){if(ev.type==='data')gGot(ev.result);else gErr(ev.error)},{refetchInterval:300000})}catch(e){gErr(e)}}
 function gConnectClick(){window.location.href='/api/google/connect'}
-function gAdd(t,b){if(!mcp||gAdding[t.id])return;gAdding[t.id]=1;b.disabled=true;
-  var en=new Date(new Date(t.due).getTime()+durMs(t));
-  mcp.callTool(GS,'create_event',{summary:t.text,startTime:t.due+':00',endTime:isoDT(en)+':00',description:tag(t.tag).n}).then(function(){
-    t.gcal=1;save();delete gAdding[t.id];try{mcp.invalidate(GS,'list_events')}catch(e){}say('Added to Google Calendar.');render()
-  }).catch(function(e){delete gAdding[t.id];b.disabled=false;
-    var c=e&&e.code;say(c==='approval_required'||c==='consent_required'?'Adding to Google Calendar needs your approval.':c==='needs_reauth'?'Reconnect Google Calendar, then try again.':'Could not add the task to Google Calendar. Check the calendar before trying again.')})}
 function durMs(t){return Math.max(5,+t.dur||30)*60000}
 function durTxt(m){m=Math.max(5,+m||30);var h=Math.floor(m/60),r=m%60;return h?(h+' h'+(r?' '+r+' min':'')):(m+' min')}
 function hm(ms){var d=new Date(ms);return p2(d.getHours())+':'+p2(d.getMinutes())}
