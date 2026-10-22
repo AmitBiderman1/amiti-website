@@ -956,7 +956,8 @@ async function autoRefresh(env, owner) {
 const MAIL_FOLDERS = ['trips', 'college', 'money', 'shopping', 'health', 'people', 'promos', 'other'];
 const RX = {
   college: /colman\.ac\.il|המכללה למנהל|מכללה למנהל|\bcolman\b/i,
-  trips: /\b(flights?|boarding pass|itinerary|e-?ticket|airbnb|booking\.com|hotels?|hostel|expedia|agoda|ryanair|wizz ?air|easyjet|el al|israir|arkia|check-?in|reservation confirm|car rental)\b|טיסה|טיסות|כרטיס טיסה|מלון|חופשה|חופשת|נופש|אל על|ישראייר|ארקיע|הזמנת מלון|טיול|העברה לשדה/i,
+  tripStrong: /(itinerary|e-?ticket|boarding pass|(booking|reservation|flight|trip|stay|hotel).{0,30}confirm|confirm.{0,30}(booking|reservation|flight|trip|stay)|your (flight|booking|reservation|trip|stay)|אישור (הזמנה|טיסה|הזמנת)|כרטיס טיסה|פרטי (הטיסה|ההזמנה)|טיסתך|הזמנתך ב)/i,
+  trips: /\b(flights?|airlines?|airport|visa|passport|vacation|travel|tripadvisor|skyscanner|kayak|trivago|hotels\.com|hostelworld|getyourguide|klook|lufthansa|turkish airlines|pegasus|aegean|wizz|ryanair|easyjet|vueling|etihad|emirates|qatar airways|boarding pass|itinerary|e-?ticket|airbnb|booking\.com|hotels?|hostel|expedia|agoda|ryanair|wizz ?air|easyjet|el al|israir|arkia|check-?in|reservation confirm|car rental)\b|טיסה|טיסות|כרטיס טיסה|מלון|חופשה|חופשת|נופש|חו"ל|חול|נסיעה|דרכון|שדה התעופה|נחיתה|ביטוח נסיעות|השכרת רכב|סוכנות נסיעות|אל על|ישראייר|ארקיע|הזמנת מלון|טיול|העברה לשדה/i,
   shopping: /aliexpress|shein|amazon|temu|ebay|zara|asos|iherb|\bksp\b|ivory|wolt|10bis|your order|הזמנה|משלוח|חבילה/i,
   money: /invoice|receipt|payment|billing|חשבונית|קבלה|חיוב|תשלום|ויזה|כאל|ישראכרט|\bmax\b|\bbank\b|בנק|paypal|ביטוח לאומי|מס הכנסה|ארנונה|חשמל|bill\b/i,
   health: /clalit|maccabi|meuhedet|leumit|כללית|מכבי|מאוחדת|לאומית|קופת חולים|תור לרופא|בדיקת דם|רופא/i,
@@ -966,6 +967,7 @@ function ruleFolder(m) {
   const t = `${m.sender} ${m.addr} ${m.subject} ${m.snippet}`;
   const promo = m.labels.some((l) => /CATEGORY_(PROMOTIONS|SOCIAL|FORUMS)/.test(l));
   if (RX.college.test(t)) return 'college';
+  if (RX.tripStrong.test(`${m.sender} ${m.subject}`) && RX.trips.test(t)) return 'trips';
   if (promo) return 'promos';
   if (RX.trips.test(t)) return 'trips';
   if (classifyOrder(m.subject, m.snippet) || RX.shopping.test(`${m.sender} ${m.addr} ${m.subject}`)) return 'shopping';
@@ -1015,25 +1017,33 @@ function parseFrom(f) {
   return { sender: nm.trim().slice(0, 80), addr: addr.slice(0, 120) };
 }
 
-// One step: newest mail first, then a slice of the older backlog. Safe to call repeatedly.
+// One step of the scan. Phases run in order: trips (whole mailbox), college (whole mailbox), then everything else.
+// bulk=true is the app driving it (bigger steps); otherwise it is the background timer (small steps).
+const SCAN_PHASES = [
+  'subject:(flight OR itinerary OR "boarding pass" OR hotel OR booking OR reservation OR airbnb OR airline OR טיסה OR מלון OR חופשה OR טיול OR "חו\\"ל" OR נסיעה OR visa OR vacation OR trip OR travel) -in:sent -in:drafts -in:chats',
+  '(from:colman.ac.il OR "המכללה למנהל" OR "college of management") -in:sent -in:drafts -in:chats',
+  '-in:sent -in:drafts -in:chats',
+];
 async function scanInbox(env, owner, opts = {}) {
   if (!gConfigured(env) || !(await getSetting(env, owner, 'g_refresh'))) return { ok: false, reason: 'not_connected' };
   if (!(await mailOk(env, owner))) return { ok: false, reason: 'scope' };
   const base = 'https://gmail.googleapis.com/gmail/v1/users/me/messages';
-  const filt = ' -in:sent -in:drafts -in:chats';
+  const step = opts.bulk ? 38 : 12;
   const ids = [];
   const addList = async (q, max, page) => {
     const r = await gGet(env, owner, `${base}?maxResults=${max}&q=${encodeURIComponent(q)}${page ? '&pageToken=' + encodeURIComponent(page) : ''}`);
     (r.messages || []).forEach((m) => ids.push(m.id));
     return r.nextPageToken || '';
   };
-  await addList('newer_than:3d' + filt, 12);
-  let done = (await getSetting(env, owner, 'inbox_done')) === '1';
-  if (!done) {
-    const page = (await getSetting(env, owner, 'inbox_page')) || '';
-    const next = await addList('newer_than:1y' + filt, 18, page);
-    if (next) await setSetting(env, owner, 'inbox_page', next);
-    else { await setSetting(env, owner, 'inbox_done', '1'); done = true; }
+  if (!opts.bulk) await addList('newer_than:3d -in:sent -in:drafts -in:chats', 12);
+  let phase = -1;
+  for (let i = 0; i < SCAN_PHASES.length; i++) if ((await getSetting(env, owner, 'sp_d' + i)) !== '1') { phase = i; break; }
+  const done0 = phase < 0;
+  if (!done0) {
+    const page = (await getSetting(env, owner, 'sp_p' + phase)) || '';
+    const next = await addList(SCAN_PHASES[phase], step, page);
+    if (next) await setSetting(env, owner, 'sp_p' + phase, next);
+    else await setSetting(env, owner, 'sp_d' + phase, '1');
   }
   const uniq = [...new Set(ids)];
   let fresh = uniq;
@@ -1043,33 +1053,40 @@ async function scanInbox(env, owner, opts = {}) {
   }
   const rules = new Map((await env.DB.prepare('SELECT addr,folder,trip FROM mail_rules WHERE owner=?').bind(owner).all()).results.map((r) => [r.addr.toLowerCase(), r]));
   const ins = [];
-  for (const id of fresh.slice(0, opts.limit || 30)) {
-    let m;
-    try { m = await gGet(env, owner, `${base}/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=List-Unsubscribe`); } catch (e) { if (e.message === 'needs_reauth') throw e; continue; }
-    const labels = m.labelIds || [];
-    if (labels.includes('SENT') || labels.includes('DRAFT')) continue;
-    const f = parseFrom(hdr(m, 'from'));
-    const row = { id, thread: m.threadId || id, ...f, subject: str(hdr(m, 'subject'), 200), date: Number(m.internalDate) || Date.now(), snippet: str(m.snippet, 240), labels };
-    const learned = rules.get(row.addr.toLowerCase());
-    row.folder = learned ? learned.folder : ruleFolder(row);
-    row.important = row.folder !== 'promos' && RX.important.test(`${row.subject} ${row.snippet}`) ? 1 : 0;
-    const gpromo = !learned && labels.some((l) => /CATEGORY_(PROMOTIONS|SOCIAL|FORUMS)/.test(l)) && row.folder === 'promos' ? 1 : 0;
-    const um = /<(https?:[^>]+)>/.exec(hdr(m, 'list-unsubscribe')) || /<(mailto:[^>]+)>/.exec(hdr(m, 'list-unsubscribe'));
-    ins.push(env.DB.prepare('INSERT OR IGNORE INTO mails(owner,id,thread,sender,addr,subject,date,snippet,folder,trip,important,pushed,fixed,gpromo,unsub) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)')
-      .bind(owner, id, row.thread, row.sender, row.addr, row.subject, row.date, row.snippet, row.folder, learned ? learned.trip : '', row.important, learned ? 1 : 0, gpromo, um ? um[1].slice(0, 400) : ''));
+  const take = fresh.slice(0, opts.bulk ? 40 : 14);
+  for (let i = 0; i < take.length; i += 10) {
+    const got = await Promise.all(take.slice(i, i + 10).map(async (id) => {
+      try { return [id, await gGet(env, owner, `${base}/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=List-Unsubscribe`)]; } catch (e) { if (e.message === 'needs_reauth') throw e; return null; }
+    }));
+    for (const g of got) {
+      if (!g) continue;
+      const [id, m] = g;
+      const labels = m.labelIds || [];
+      if (labels.includes('SENT') || labels.includes('DRAFT')) continue;
+      const f = parseFrom(hdr(m, 'from'));
+      const row = { id, thread: m.threadId || id, ...f, subject: str(hdr(m, 'subject'), 200), date: Number(m.internalDate) || Date.now(), snippet: str(m.snippet, 240), labels };
+      const learned = rules.get(row.addr.toLowerCase());
+      row.folder = learned ? learned.folder : ruleFolder(row);
+      row.important = row.folder !== 'promos' && RX.important.test(`${row.subject} ${row.snippet}`) ? 1 : 0;
+      const gpromo = !learned && labels.some((l) => /CATEGORY_(PROMOTIONS|SOCIAL|FORUMS)/.test(l)) && row.folder === 'promos' ? 1 : 0;
+      const um = /<(https?:[^>]+)>/.exec(hdr(m, 'list-unsubscribe')) || /<(mailto:[^>]+)>/.exec(hdr(m, 'list-unsubscribe'));
+      ins.push(env.DB.prepare('INSERT OR IGNORE INTO mails(owner,id,thread,sender,addr,subject,date,snippet,folder,trip,important,pushed,fixed,gpromo,unsub) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)')
+        .bind(owner, id, row.thread, row.sender, row.addr, row.subject, row.date, row.snippet, row.folder, learned ? learned.trip : '', row.important, learned ? 1 : 0, gpromo, um ? um[1].slice(0, 400) : ''));
+    }
   }
   if (ins.length) await env.DB.batch(ins);
   // let the AI sort what the rules could not (and name the holidays); retried later if it is rate limited
   let ai = 0, limited = false;
   if (!opts.noAi && env.AI) {
-    const pend = (await env.DB.prepare("SELECT id,sender,addr,subject,snippet,important FROM mails WHERE owner=? AND fixed=0 AND (folder='' OR (folder='trips' AND trip='')) ORDER BY date DESC LIMIT 12").bind(owner).all()).results;
+    const pend = (await env.DB.prepare("SELECT id,sender,addr,subject,snippet,important FROM mails WHERE owner=? AND fixed=0 AND deleted=0 AND (folder='' OR (folder='trips' AND trip='')) ORDER BY date DESC LIMIT 12").bind(owner).all()).results;
     if (pend.length) {
       const names = (await env.DB.prepare("SELECT DISTINCT trip FROM mails WHERE owner=? AND trip<>'' LIMIT 20").bind(owner).all()).results.map((r) => r.trip);
       const r = await aiSortMails(env, owner, pend, names);
       if (r === 'limit') limited = true; else if (typeof r === 'number') ai = r;
     }
   }
-  return { ok: true, added: ins.length, ai, limited, done };
+  const total = (await env.DB.prepare('SELECT COUNT(*) n FROM mails WHERE owner=?').bind(owner).first()).n;
+  return { ok: true, added: ins.length, ai, limited, done: done0 || phase === SCAN_PHASES.length - 1 && (await getSetting(env, owner, 'sp_d' + phase)) === '1', phase, total };
 }
 
 // One morning push (08:00) with what needs attention, instead of a ping per mail.
@@ -1161,7 +1178,16 @@ async function syncGmail(env, owner, opts = {}) {
     await env.DB.prepare(`UPDATE mails SET deleted=1 WHERE owner=? AND id IN (${queued.map(() => '?').join(',')})`).bind(owner, ...queued).run();
     trashed += queued.length;
   }
-  const promos = (await env.DB.prepare("SELECT id FROM mails WHERE owner=? AND folder='promos' AND gpromo=1 AND fixed=0 AND deleted=0 LIMIT 300").bind(owner).all()).results.map((r) => r.id);
+  // never trash something that looks like a booking confirmation or college mail, even if Gmail called it a promotion
+  const cand = (await env.DB.prepare("SELECT id,sender,addr,subject,snippet FROM mails WHERE owner=? AND folder='promos' AND gpromo=1 AND fixed=0 AND deleted=0 LIMIT 300").bind(owner).all()).results;
+  const promos = [], rescue = [];
+  for (const c of cand) {
+    const t = `${c.sender} ${c.addr} ${c.subject} ${c.snippet}`;
+    if (RX.college.test(t)) rescue.push(['college', c.id]);
+    else if (RX.tripStrong.test(`${c.sender} ${c.subject}`) && RX.trips.test(t)) rescue.push(['trips', c.id]);
+    else promos.push(c.id);
+  }
+  if (rescue.length) await env.DB.batch(rescue.map(([f, id]) => env.DB.prepare("UPDATE mails SET folder=?,gpromo=0,gsync=0 WHERE owner=? AND id=?").bind(f, owner, id)));
   if (promos.length) {
     await gSend(env, owner, base + '/batchModify', { ids: promos, addLabelIds: ['TRASH'], removeLabelIds: ['INBOX'] });
     await env.DB.prepare(`UPDATE mails SET deleted=1 WHERE owner=? AND id IN (${promos.map(() => '?').join(',')})`).bind(owner, ...promos).run();
@@ -1200,6 +1226,18 @@ async function trashMail(env, owner, id) {
   await gSend(env, owner, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}/trash`);
   await env.DB.prepare('UPDATE mails SET deleted=1 WHERE owner=? AND id=?').bind(owner, id).run();
   return { ok: true };
+}
+
+async function trashMails(env, owner, ids) {
+  if (!ids.length) return { ok: true, n: 0 };
+  const ph = ids.map(() => '?').join(',');
+  if (!(await mailModOk(env, owner))) {
+    await env.DB.prepare(`UPDATE mails SET deleted=2 WHERE owner=? AND id IN (${ph})`).bind(owner, ...ids).run();
+    return { ok: true, n: ids.length, pending: true };
+  }
+  await gSend(env, owner, 'https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify', { ids, addLabelIds: ['TRASH'], removeLabelIds: ['INBOX'] });
+  await env.DB.prepare(`UPDATE mails SET deleted=1 WHERE owner=? AND id IN (${ph})`).bind(owner, ...ids).run();
+  return { ok: true, n: ids.length };
 }
 
 async function restoreMail(env, owner, id) {
@@ -1486,10 +1524,14 @@ export default {
           return json({ ...(await listInbox(env, owner, url.searchParams.get('folder') || 'important', url.searchParams.has('trip') ? url.searchParams.get('trip') : null, url.searchParams.get('q') || '', Number(url.searchParams.get('days')) || 0)), mail: !!(await getSetting(env, owner, 'g_refresh')) && (await mailOk(env, owner)) });
         case 'POST /api/inbox/scan': {
           let res;
-          try { res = await scanInbox(env, owner, { noPush: false }); } catch (e) {
+          try { res = await scanInbox(env, owner, { bulk: true }); } catch (e) {
             return fail(e.message === 'needs_reauth' ? 401 : 502, 'Gmail error', e.message === 'needs_reauth' ? 'needs_reauth' : String(e.message || 'upstream_error').slice(0, 40));
           }
           return json(res);
+        }
+        case 'POST /api/inbox/rescan': {
+          for (let i = 0; i < SCAN_PHASES.length; i++) { await delSetting(env, owner, 'sp_d' + i); await delSetting(env, owner, 'sp_p' + i); }
+          return json({ ok: true });
         }
         case 'POST /api/inbox/gsync': {
           try { return json(await syncGmail(env, owner)); } catch (e) {
@@ -1508,6 +1550,12 @@ export default {
         case 'POST /api/inbox/delete': {
           let b;
           try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
+          if (Array.isArray(b?.ids)) {
+            const ids = b.ids.map(String).filter((i) => /^[A-Za-z0-9_-]{2,40}$/.test(i)).slice(0, 300);
+            try { return json(await trashMails(env, owner, ids)); } catch (e) {
+              return fail(e.message === 'needs_reauth' ? 401 : 502, 'Gmail error', e.message === 'needs_reauth' ? 'needs_reauth' : String(e.message || 'upstream_error').slice(0, 40));
+            }
+          }
           if (!/^[A-Za-z0-9_-]{2,40}$/.test(String(b?.id))) return fail(400, 'Bad request', 'bad_request');
           try {
             const r = await trashMail(env, owner, String(b.id));
@@ -1517,6 +1565,11 @@ export default {
         case 'POST /api/inbox/move': {
           let b;
           try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
+          if (Array.isArray(b.ids) && b.read) {
+            const ids = b.ids.map(String).filter((i) => /^[A-Za-z0-9_-]{2,40}$/.test(i)).slice(0, 300);
+            if (ids.length) await env.DB.prepare(`UPDATE mails SET hidden=1,important=0 WHERE owner=? AND id IN (${ids.map(() => '?').join(',')})`).bind(owner, ...ids).run();
+            return json({ ok: true, n: ids.length });
+          }
           if (!/^[A-Za-z0-9_-]{2,40}$/.test(String(b?.id))) return fail(400, 'Bad request', 'bad_request');
           if (b.read) await env.DB.prepare('UPDATE mails SET hidden=1,important=0 WHERE owner=? AND id=?').bind(owner, String(b.id)).run();
           if (b.dismiss) await env.DB.prepare('UPDATE mails SET important=0 WHERE owner=? AND id=?').bind(owner, String(b.id)).run();

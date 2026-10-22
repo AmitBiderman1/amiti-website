@@ -260,11 +260,11 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
       <div class="fbar"><input type="search" id="inbQ" placeholder="Search mail…" style="flex:1;min-width:140px" autocomplete="off"><select id="inbDays" aria-label="Period"><option value="0">Any time</option><option value="30">30 days</option><option value="90">3 months</option><option value="365">1 year</option></select></div>
       <div class="chips" id="inbChips"></div>
       <div class="chips" id="inbTrips"></div>
-      <div class="fbar"><button class="btn" id="inbScan">↻ Sort now</button><button class="btn p" id="inbAllow" hidden>Allow Gmail changes</button></div>
+      <div class="fbar"><button class="btn" id="inbScan">↻ Sort now</button><button class="btn p" id="inbAllow" hidden>Allow Gmail changes</button><button class="btn" id="inbSelBtn">☑ Select</button><button class="btn" id="inbAll">Scan everything</button></div>
       <p class="note" id="inbNote"></p>
       <p class="note" id="inbTripInfo"></p>
     </div>
-    <div class="card"><h2 id="inbTitle">Important</h2><div id="inbList"></div></div>
+    <div class="card"><h2 id="inbTitle">Important</h2><div class="fbar" id="inbBulk" hidden><button class="btn" id="bAll">Select all</button><button class="btn p" id="bDel">🗑 Delete (0)</button><button class="btn" id="bRead">✓ Read (0)</button><button class="btn" id="bCancel">Cancel</button></div><div id="inbList"></div></div>
   </section>
 
   <section id="v-quotes" class="hide">
@@ -1105,7 +1105,7 @@ $('qAsk').onsubmit=function(e){e.preventDefault();var t=$('qIn').value.trim();if
 
 
 /* inbox */
-var inb={q:'',days:0,folder:'important',trip:null,data:null,busy:false,loops:0};
+var inb={sel:{},selMode:false,q:'',days:0,folder:'important',trip:null,data:null,busy:false,loops:0};
 var IF=[['important','⭐ Important'],['trips','✈️ Trips'],['college','🎓 המכללה למנהל'],['money','💳 Money'],['shopping','📦 Shopping'],['health','🩺 Health'],['people','💌 People'],['promos','🏷️ Promos'],['other','🗂 Other'],['unsorted','⏳ Waiting'],['deleted','🗑 Deleted']];
 function mailUrl(m){return 'https://mail.google.com/mail/u/0/#all/'+encodeURIComponent(m.thread||m.id)}
 function loadInbox(){var u='/api/inbox?folder='+encodeURIComponent(inb.q?'all':inb.folder)+(inb.q?'&q='+encodeURIComponent(inb.q):'')+(inb.days?'&days='+inb.days:'')+(inb.trip!==null?'&trip='+encodeURIComponent(inb.trip):'');
@@ -1113,7 +1113,7 @@ function loadInbox(){var u='/api/inbox?folder='+encodeURIComponent(inb.q?'all':i
 function scanInbox(){if(inb.busy)return;inb.busy=true;renderInbox();
   fetch('/api/inbox/scan',{method:'POST'}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j}})}).then(function(x){
     inb.busy=false;if(!x.ok){inb.err=x.j&&x.j.code==='needs_reauth'?'Google needs you to connect again (Orders tab → Connect Gmail).':'Could not reach Gmail right now.';renderInbox();return}
-    inb.err='';inb.last=x.j;gsyncLoop(0);return loadInbox().then(function(){if(!x.j.done&&tab==='inbox'&&inb.loops++<400)setTimeout(scanInbox,800);else if(x.j.limited){inb.err='AI daily limit reached, the rest is sorted later automatically.';renderInbox()}})
+    inb.err='';inb.last=x.j;if(x.j.done||inb.loops%10===0)gsyncLoop(0);return loadInbox().then(function(){if(!x.j.done&&tab==='inbox'&&inb.loops++<3000)setTimeout(scanInbox,800);else if(x.j.limited){inb.err='AI daily limit reached, the rest is sorted later automatically.';renderInbox()}})
   }).catch(function(){inb.busy=false;inb.err='Could not reach Gmail right now.';renderInbox()})}
 function gsyncLoop(n){if(!CFG.mailMod||n>30)return;fetch('/api/inbox/gsync',{method:'POST'}).then(function(r){return r.ok?r.json():null}).then(function(j){if(j&&j.ok&&(j.more||j.trashed))setTimeout(function(){gsyncLoop(n+1)},500)}).catch(function(){})}
 var toastT=null;
@@ -1133,10 +1133,20 @@ function renderInbox(){
   if(!CFG.gcal||!CFG.mail){$('inbChips').innerHTML='';$('inbTrips').innerHTML='';$('inbList').innerHTML='';$('inbAllow').hidden=true;$('inbScan').hidden=false;$('inbScan').textContent=CFG.gcal?'Connect Gmail':'Google is not set up';$('inbScan').onclick=function(){if(CFG.gcal)location.href='/api/google/connect'};note.textContent='Gmail is only read, never changed. Your emails are sorted inside this app.';return}
   if(!d){loadInbox();$('inbList').innerHTML='<div class="empty">Loading…</div>';return}
   var tot=0;Object.keys(d.counts).forEach(function(k){tot+=d.counts[k]});
-  $('inbStat').textContent=tot+' emails sorted'+(d.done?'':' · reading older mail…');
+  var PH=['trip mails','college mail','everything else'];$('inbStat').textContent=tot+' emails sorted'+(d.done?'':(inb.busy&&inb.last&&inb.last.phase>=0?' · reading '+PH[inb.last.phase]+'…':' · paused, tap Sort now'));
   $('inbScan').hidden=false;$('inbScan').disabled=inb.busy;$('inbScan').textContent=inb.busy?'Sorting…':'↻ Sort now';$('inbScan').onclick=function(){inb.loops=0;scanInbox()};
   var up=$('inbAllow');up.hidden=!!CFG.mailMod;up.onclick=function(){location.href='/api/google/connect'};
   note.textContent=inb.err||(CFG.mailMod?'Folders are mirrored in Gmail as labels (Amiti/…). Swipe a mail left to delete it, right when you have read it (hides it here, Gmail unchanged). Promotions go to Gmail Trash.':'')||'Sorted automatically in the background. Gmail itself is never changed — folders live here. Tap a mail to open it in Gmail.';
+  $('inbAll').disabled=inb.busy;$('inbAll').onclick=function(){if(inb.busy)return;fetch('/api/inbox/rescan',{method:'POST'}).then(function(){inb.loops=0;inb.autoStarted=true;scanInbox()})};
+  $('inbSelBtn').textContent=inb.selMode?'✕ Cancel select':'☑ Select';$('inbSelBtn').onclick=function(){inb.selMode=!inb.selMode;inb.sel={};renderInbox()};
+  var nSel=Object.keys(inb.sel).length,bb=$('inbBulk');bb.hidden=!inb.selMode;
+  $('bDel').textContent='🗑 Delete ('+nSel+')';$('bDel').disabled=!nSel;$('bRead').textContent='✓ Read ('+nSel+')';$('bRead').disabled=!nSel;
+  $('bCancel').onclick=function(){inb.selMode=false;inb.sel={};renderInbox()};
+  $('bAll').onclick=function(){var all=(inb.data&&inb.data.mails)||[];var every=all.length&&all.every(function(m){return inb.sel[m.id]});inb.sel={};if(!every)all.forEach(function(m){inb.sel[m.id]=1});renderInbox()};
+  $('bDel').onclick=function(){var ids=Object.keys(inb.sel);if(!ids.length)return;fetch('/api/inbox/delete',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ids:ids})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j}})}).then(function(x){
+      if(!x.ok){toast('Could not delete right now.');return}inb.sel={};inb.selMode=false;inb.data=null;loadInbox();
+      toast(ids.length+' removed'+(x.j.pending?'. They move to Gmail Trash once you allow Gmail changes.':' and moved to Gmail Trash.'),'Undo',function(){Promise.all(ids.map(function(id){return fetch('/api/inbox/restore',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:id})})})).then(function(){inb.data=null;loadInbox()})})}).catch(function(){toast('Could not delete right now.')})};
+  $('bRead').onclick=function(){var ids=Object.keys(inb.sel);if(!ids.length)return;fetch('/api/inbox/move',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ids:ids,read:true})}).then(function(){inb.sel={};inb.selMode=false;inb.data=null;loadInbox();toast(ids.length+' marked read (hidden here, unchanged in Gmail).')})};
   var qi=$('inbQ');if(!qi.dataset.on){qi.dataset.on=1;var qt=null;qi.oninput=function(){clearTimeout(qt);qt=setTimeout(function(){inb.q=qi.value.trim();inb.data=null;loadInbox()},350)};$('inbDays').onchange=function(){inb.days=+$('inbDays').value;inb.data=null;loadInbox()}}
   var ti=$('inbTripInfo'),tf=d.tripInfo;ti.textContent=tf&&inb.folder==='trips'&&!inb.q?tf.n+' mails · '+new Date(tf.from).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'2-digit'})+' – '+new Date(tf.to).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'2-digit'})+(tf.senders.length?' · '+tf.senders.join(', '):''):'';
   var ch=$('inbChips');ch.innerHTML='';
@@ -1152,6 +1162,7 @@ function renderInbox(){
     var a=document.createElement('a');a.href=mailUrl(m);a.target='_blank';a.rel='noopener';a.textContent=m.subject||'(no subject)';a.style.cssText='color:inherit;font-weight:600;text-decoration:none';nm.appendChild(a);
     var sm2=document.createElement('small');sm2.textContent=(m.sender||m.addr)+' · '+new Date(m.date).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'2-digit'});nm.appendChild(sm2);
     if(m.snippet){var sn=document.createElement('small');sn.textContent=m.snippet.slice(0,110);nm.appendChild(sn)}
+    if(inb.selMode){var cb=document.createElement('input');cb.type='checkbox';cb.checked=!!inb.sel[m.id];cb.setAttribute('aria-label','Select');cb.onchange=function(){if(cb.checked)inb.sel[m.id]=1;else delete inb.sel[m.id];renderInbox()};r.appendChild(cb);r.appendChild(nm);l.appendChild(r);return}
     r.appendChild(nm);
     if(inb.folder==='deleted'){var rs=document.createElement('button');rs.className='btn';rs.textContent='Restore';rs.onclick=function(){undoMail(m)};r.appendChild(rs);l.appendChild(r);return}
     if(m.unsub&&(m.folder==='promos'||inb.folder==='promos')&&/^https?:/.test(m.unsub)){var ua=document.createElement('a');ua.className='btn';ua.href=m.unsub;ua.target='_blank';ua.rel='noopener';ua.textContent='Unsubscribe';ua.style.cssText='font-size:.8rem;padding:4px 8px;text-decoration:none;color:var(--ink)';r.appendChild(ua)}
