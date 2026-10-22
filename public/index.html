@@ -26,7 +26,7 @@ button,input,select{font:inherit;color:inherit}
 .btn{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer}
 .btn:hover{border-color:var(--accent)}
 .btn.p{background:var(--accent);color:var(--ai);border-color:var(--accent);font-weight:600}
-.nav{display:flex;gap:6px;margin-bottom:14px;border-bottom:1px solid var(--line);padding-bottom:10px;overflow-x:auto}
+.nav{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;border-bottom:1px solid var(--line);padding-bottom:10px}
 .nav button{background:none;border:0;border-radius:8px;padding:7px 16px;cursor:pointer;font-weight:600;color:var(--mute)}
 .nav button.on{background:var(--accent);color:var(--ai)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:14px}
@@ -121,6 +121,7 @@ li.done .t span{text-decoration:line-through;color:var(--mute)}
 .wg-now{position:absolute;left:0;right:0;height:2px;background:var(--hi);z-index:2;pointer-events:none}
 .legend{display:flex;gap:14px;color:var(--mute);font-size:.8rem;margin-top:8px}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.msg2{padding:8px 12px;border-radius:12px;margin:6px 0;white-space:pre-wrap;max-width:90%;overflow-wrap:anywhere}.msg2.me{background:var(--accent);color:var(--ai);margin-left:auto}.msg2.bot{background:var(--beige,var(--line))}
 .rrow{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid var(--line)}.rrow:first-of-type{border-top:0}.rrow b.ok{color:var(--lo)}.rrow b.over{color:var(--hi)}
 .fhead{display:flex;align-items:baseline;gap:8px;margin-bottom:8px}
 .big{font:700 2rem/1 Fraunces,Georgia,serif}
@@ -159,8 +160,8 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
 .bt h1{font:700 1.9rem/1.1 Fraunces,Georgia,serif;margin:0;color:var(--ink)}
 .bt span{color:var(--mute);font-size:.82rem;letter-spacing:.06em}
 .hb{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
-.nav button{border-radius:999px;white-space:nowrap;flex:0 1 auto;padding:7px 5px;font-size:.82rem}
-.nav{gap:2px}
+.nav button{border-radius:999px;white-space:nowrap;flex:0 1 auto;padding:7px 10px;font-size:.9rem}
+.nav{gap:4px}
 .tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:14px}
 .tile{min-width:0;overflow:hidden;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px;cursor:pointer;text-align:left}
 .tile:hover{border-color:var(--accent)}
@@ -248,6 +249,23 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
     <div class="card"><h2 id="dayTitle">Tasks</h2><ul id="dayList"></ul></div>
     <div class="card"><h2 id="gTitle">Google Calendar</h2><div id="gList"></div><p class="note" id="gStatus">Connecting…</p><button class="btn hide" id="gConnect">Connect Google Calendar</button></div>
   </div>
+  </section>
+
+  <section id="v-quotes" class="hide">
+    <div class="card">
+      <h2>Quotes I love</h2>
+      <form id="qF">
+        <textarea id="qText" placeholder="Add a quote you love…" maxlength="1000" required></textarea>
+        <div class="fbar"><input type="text" id="qAuthor" placeholder="Who said it" maxlength="120" style="flex:1;min-width:140px" autocomplete="off"><button class="btn p">Add quote</button></div>
+      </form>
+      <div id="qList"></div>
+    </div>
+    <div class="card">
+      <h2>Find me a quote</h2>
+      <div class="fchat" id="qChat"></div>
+      <form id="qAsk" class="fbar"><input type="text" id="qIn" placeholder="Tell me what you're writing or feeling…" maxlength="500" style="flex:1;min-width:160px" autocomplete="off"><button class="btn p" id="qGo">Find</button></form>
+      <p class="note" id="qMsg"></p>
+    </div>
   </section>
 
   <section id="v-shop" class="hide">
@@ -382,17 +400,17 @@ var now0=new Date(),view=new Date(now0.getFullYear(),now0.getMonth(),1);
 var $=function(i){return document.getElementById(i)};
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
 /* ---- sync with the server ---- */
-var snap={tasks:{},food:{},meals:{},work:{},weights:{},shop:{},goal:null,burn:null,wmins:null},syncT=null,syncBusy=false,syncDirty=false,failN=0;
+var snap={tasks:{},food:{},meals:{},work:{},weights:{},shop:{},quotes:{},goal:null,burn:null,wmins:null},syncT=null,syncBusy=false,syncDirty=false,failN=0;
 function foodFlat(){var o={};Object.keys(food.log).forEach(function(d){(food.log[d]||[]).forEach(function(e){o[e.id]=Object.assign({day:d},e)})});return o}
 function workFlat(){var o={};Object.keys(food.work).forEach(function(d){(food.work[d]||[]).forEach(function(e){o[e.id]=Object.assign({day:d},e)})});return o}
 function wtFlat(){var o={};Object.keys(food.wt).forEach(function(d){var e=food.wt[d];if(e)o[e.id]={id:e.id,day:d,kg:e.kg}});return o}
-function primeSnap(){snap={tasks:{},food:{},meals:{},work:{},weights:{},shop:{},goal:food.goal,burn:food.burn,wmins:food.wmins};food.shop.forEach(function(e){snap.shop[e.id]=JSON.stringify(e)});var wf=workFlat();Object.keys(wf).forEach(function(k){snap.work[k]=JSON.stringify(wf[k])});var tf=wtFlat();Object.keys(tf).forEach(function(k){snap.weights[k]=JSON.stringify(tf[k])});tasks.forEach(function(t){snap.tasks[t.id]=JSON.stringify(t)});var ff=foodFlat();Object.keys(ff).forEach(function(k){snap.food[k]=JSON.stringify(ff[k])});food.meals.forEach(function(m){snap.meals[m.id]=JSON.stringify(m)})}
+function primeSnap(){snap={tasks:{},food:{},meals:{},work:{},weights:{},shop:{},quotes:{},goal:food.goal,burn:food.burn,wmins:food.wmins};food.shop.forEach(function(e){snap.shop[e.id]=JSON.stringify(e)});food.quotes.forEach(function(e){snap.quotes[e.id]=JSON.stringify(e)});var wf=workFlat();Object.keys(wf).forEach(function(k){snap.work[k]=JSON.stringify(wf[k])});var tf=wtFlat();Object.keys(tf).forEach(function(k){snap.weights[k]=JSON.stringify(tf[k])});tasks.forEach(function(t){snap.tasks[t.id]=JSON.stringify(t)});var ff=foodFlat();Object.keys(ff).forEach(function(k){snap.food[k]=JSON.stringify(ff[k])});food.meals.forEach(function(m){snap.meals[m.id]=JSON.stringify(m)})}
 function sync(){clearTimeout(syncT);syncT=setTimeout(doSync,350)}
 function doSync(){syncT=null;if(syncBusy){syncDirty=true;return}
-  var body={tasks:{upsert:[],del:[]},food:{upsert:[],del:[]},meals:{upsert:[],del:[]},work:{upsert:[],del:[]},weights:{upsert:[],del:[]},shop:{upsert:[],del:[]}},next={tasks:{},food:{},meals:{},work:{},weights:{},shop:{},goal:food.goal,burn:food.burn,wmins:food.wmins},n=0;
+  var body={tasks:{upsert:[],del:[]},food:{upsert:[],del:[]},meals:{upsert:[],del:[]},work:{upsert:[],del:[]},weights:{upsert:[],del:[]},shop:{upsert:[],del:[]},quotes:{upsert:[],del:[]}},next={tasks:{},food:{},meals:{},work:{},weights:{},shop:{},quotes:{},goal:food.goal,burn:food.burn,wmins:food.wmins},n=0;
   function diff(kind,cur){var old=snap[kind];Object.keys(cur).forEach(function(id){var j=JSON.stringify(cur[id]);next[kind][id]=j;if(old[id]!==j){body[kind].upsert.push(cur[id]);n++}});Object.keys(old).forEach(function(id){if(!(id in cur)){body[kind].del.push(id);n++}})}
   var tm={};tasks.forEach(function(t){tm[t.id]=t});var mm={};food.meals.forEach(function(m){mm[m.id]=m});
-  diff('tasks',tm);diff('food',foodFlat());diff('meals',mm);diff('work',workFlat());diff('weights',wtFlat());var sh={};food.shop.forEach(function(e){sh[e.id]=e});diff('shop',sh);
+  diff('tasks',tm);diff('food',foodFlat());diff('meals',mm);diff('work',workFlat());diff('weights',wtFlat());var sh={};food.shop.forEach(function(e){sh[e.id]=e});diff('shop',sh);var qq={};food.quotes.forEach(function(e){qq[e.id]=e});diff('quotes',qq);
   if(food.goal!==snap.goal){body.goal=food.goal;n++}
   if(food.burn!==snap.burn){body.burn=food.burn;n++}if(food.wmins!==snap.wmins){body.wmins=food.wmins;n++}
   if(!n)return;syncBusy=true;
@@ -852,12 +870,12 @@ function checkOrdersNow(){if(ordBusy)return;ordBusy=true;renderOrders();
     if(!x.r.ok){say('Could not reach Gmail ('+(x.j.code||x.r.status)+').');return}
     ordData={orders:x.j.orders,mail:true};say(x.j.changed?x.j.changed+' order update(s)':'No new order emails')})
   .catch(function(){say('Could not reach Gmail.')}).then(function(){ordBusy=false;renderOrders()})}
-var TABS=[['today','Today'],['tasks','Tasks'],['orders','Orders'],['cal','Calendar'],['food','Health'],['shop','Shopping']];
+var TABS=[['today','Today'],['tasks','Tasks'],['orders','Orders'],['cal','Calendar'],['food','Health'],['shop','Shopping'],['quotes','Quotes']];
 
 function renderNav(){var n=$('nav');n.innerHTML='';
   TABS.forEach(function(x){var b=document.createElement('button');b.textContent=x[1];b.className=tab===x[0]?'on':'';b.onclick=function(){tab=x[0];openSn=null;render()};n.appendChild(b)});
   TABS.forEach(function(x){$('v-'+x[0]).classList.toggle('hide',tab!==x[0])})}
-function render(){renderNav();renderAlerts();if(tab==='today')renderToday();else if(tab==='tasks')renderTasks();else if(tab==='orders')renderOrders();else if(tab==='food')renderFood();else if(tab==='shop')renderShop();else renderCal()}
+function render(){renderNav();renderAlerts();if(tab==='today')renderToday();else if(tab==='tasks')renderTasks();else if(tab==='orders')renderOrders();else if(tab==='food')renderFood();else if(tab==='shop')renderShop();else if(tab==='quotes')renderQuotes();else renderCal()}
 
 TAGS.forEach(function(t){var o=document.createElement('option');o.value=t.k;o.textContent=t.n;$('tag').appendChild(o)});
 $('add').onclick=function(){openForm(null)};
@@ -895,12 +913,12 @@ $('form2').onsubmit=function(ev){ev.preventDefault();var e=dupEv;if(!e||!mcp)ret
   mcp.callTool(GS,'create_event',body).then(function(){try{mcp.invalidate(GS,'list_events')}catch(x){}say('Event duplicated in Google Calendar.')})
    .catch(function(er){var c=er&&er.code;say(c==='approval_required'||c==='consent_required'?'Creating events needs your approval.':c==='needs_reauth'?'Reconnect Google Calendar.':'Could not duplicate the event. Check Google Calendar before trying again.')})};
 /* ===== FOOD ===== */
-var FK='amiti-food-v1',food={goal:2000,burn:300,wmins:30,log:{},meals:[],work:{},wt:{},shop:[]},fd=new Date(),sm=null,smImg=false,smTried=false,fTab='describe',stage=[],plate=null,plateTurns=[],fEdit=null,mEdit=null,mRows=[];
+var FK='amiti-food-v1',food={goal:2000,burn:300,wmins:30,log:{},meals:[],work:{},wt:{},shop:[],quotes:[]},fd=new Date(),sm=null,smImg=false,smTried=false,fTab='describe',stage=[],plate=null,plateTurns=[],fEdit=null,mEdit=null,mRows=[];
 fd=new Date(fd.getFullYear(),fd.getMonth(),fd.getDate());
 var SLOTS=[['breakfast','Breakfast'],['lunch','Lunch'],['dinner','Dinner'],['snack','Snacks']];
 var ITEMS_PROMPT='You are a nutrition assistant. Break the food into separate items. If a portion is not given, assume a typical single serving and say which in "portion". Use standard nutrition database values (USDA or similar) for the specific food named. Keep each item name in the same language the user used. Numbers only: kcal, and protein, carbs and fat in grams, for the whole portion. Reply with only a JSON array, for example [{"name":"Fried egg","portion":"1 large","kcal":90,"protein":6.3,"carbs":0.4,"fat":7}].';
 var PLATE_RULES='You are a friendly nutrition assistant. The user shares a photo of their plate and asks questions about it. Answer briefly and in the language the user writes. Portion sizes and nutrition from a photo are rough estimates; say so when you guess.';
-function fLoad(){food.goal=+INIT.goal>0?+INIT.goal:2000;food.log={};(INIT.food||[]).forEach(function(e){(food.log[e.day]=food.log[e.day]||[]).push({id:String(e.id),slot:e.slot,name:e.name,kcal:e.kcal,p:e.p,c:e.c,f:e.f})});food.burn=+INIT.burn>=0&&INIT.burn!=null?+INIT.burn:300;food.wmins=+INIT.wmins>=0&&INIT.wmins!=null?+INIT.wmins:30;food.work={};(INIT.work||[]).forEach(function(e){(food.work[e.day]=food.work[e.day]||[]).push({id:String(e.id),kind:e.kind,mins:e.mins,kcal:e.kcal})});food.shop=(INIT.shop||[]).map(function(e){return {id:String(e.id),name:e.name,done:!!e.done}});food.wt={};(INIT.weights||[]).forEach(function(e){food.wt[e.day]={id:String(e.id),kg:e.kg}});food.meals=(INIT.meals||[]).map(function(m){return {id:String(m.id),name:m.name,servings:m.servings,ing:m.ing||[]}})}
+function fLoad(){food.goal=+INIT.goal>0?+INIT.goal:2000;food.log={};(INIT.food||[]).forEach(function(e){(food.log[e.day]=food.log[e.day]||[]).push({id:String(e.id),slot:e.slot,name:e.name,kcal:e.kcal,p:e.p,c:e.c,f:e.f})});food.burn=+INIT.burn>=0&&INIT.burn!=null?+INIT.burn:300;food.wmins=+INIT.wmins>=0&&INIT.wmins!=null?+INIT.wmins:30;food.work={};(INIT.work||[]).forEach(function(e){(food.work[e.day]=food.work[e.day]||[]).push({id:String(e.id),kind:e.kind,mins:e.mins,kcal:e.kcal})});food.shop=(INIT.shop||[]).map(function(e){return {id:String(e.id),name:e.name,done:!!e.done}});food.quotes=(INIT.quotes||[]).map(function(e){return {id:String(e.id),text:e.text,author:e.author||''}});food.wt={};(INIT.weights||[]).forEach(function(e){food.wt[e.day]={id:String(e.id),kg:e.kg}});food.meals=(INIT.meals||[]).map(function(m){return {id:String(m.id),name:m.name,servings:m.servings,ing:m.ing||[]}})}
 function fSave(){sync()}
 function num(v){var n=parseFloat(v);return isFinite(n)&&n>=0?n:0}
 function r1(n){return Math.round(n*10)/10}
@@ -1043,6 +1061,32 @@ $('shopCopy').onclick=function(){var t=food.shop.filter(function(y){return !y.do
   var ok=function(){$('shopMsg').textContent='Copied.'},no=function(){$('shopMsg').textContent='Could not copy on this device.'};
   try{navigator.clipboard.writeText(t).then(ok,no)}catch(e){no()}};
 
+/* quotes */
+var qMsgs=[];
+function qLine(q){return '“'+q.text+'”'+(q.author?' — '+q.author:'')}
+function renderQuotes(){var l=$('qList');l.innerHTML='';
+  if(!food.quotes.length){var e=document.createElement('div');e.className='empty';e.textContent='No quotes yet. Add one you love.';l.appendChild(e)}
+  food.quotes.slice().reverse().forEach(function(q){var r=document.createElement('div');r.className='frow';
+    var nm=document.createElement('div');nm.className='nm';nm.dir='auto';nm.textContent='“'+q.text+'”';
+    if(q.author){var sm2=document.createElement('small');sm2.textContent='— '+q.author;nm.appendChild(sm2)}
+    var x=document.createElement('button');x.className='x';x.textContent='✕';x.title='Delete';x.setAttribute('aria-label','Delete');
+    x.onclick=function(){food.quotes=food.quotes.filter(function(y){return y!==q});fSave();renderQuotes()};
+    r.appendChild(nm);r.appendChild(x);l.appendChild(r)});
+  var c=$('qChat');c.innerHTML='';
+  qMsgs.forEach(function(m){var d=document.createElement('div');d.className='msg2 '+m.who;d.dir='auto';d.textContent=m.t;c.appendChild(d)})}
+function qBest(text){var w=String(text).toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(function(x){return x.length>2}),best=null,bs=0;
+  food.quotes.forEach(function(q){var t=(q.text+' '+q.author).toLowerCase(),s=0;w.forEach(function(x){if(t.indexOf(x)>=0)s++});if(s>bs){bs=s;best=q}});return best||food.quotes[Math.floor(Math.random()*food.quotes.length)]}
+$('qF').onsubmit=function(e){e.preventDefault();var t=$('qText').value.trim();if(!t)return;food.quotes.push({id:uid(),text:t.slice(0,1000),author:$('qAuthor').value.trim().slice(0,120)});$('qText').value='';$('qAuthor').value='';fSave();renderQuotes()};
+$('qAsk').onsubmit=function(e){e.preventDefault();var t=$('qIn').value.trim();if(!t)return;$('qIn').value='';qMsgs.push({who:'me',t:t});
+  if(!food.quotes.length){qMsgs.push({who:'bot',t:'Add a few quotes above first, then I can pick one for you.'});renderQuotes();return}
+  var list=food.quotes.slice(0,200),b=$('qGo'),reply=function(q,why){qMsgs.push({who:'bot',t:qLine(q)+(why?'\n\n'+why:'')});renderQuotes()};
+  if(!sm){reply(qBest(t),'(Matched by keywords. AI is not available right now.)');return}
+  b.disabled=true;$('qMsg').textContent='Looking…';renderQuotes();
+  var lines=list.map(function(q,i){return i+': '+qLine(q)}).join('\n');
+  sm.json('You pick the best quote for a text from a fixed list. Choose ONLY from the numbered list, never invent or change a quote. Reply with only a JSON object {"index": number, "why": one short sentence in the same language as the user text}.\n\nQuotes:\n'+lines+'\n\nUser text:\n'+t,{modelTier:'default',cache:false})
+   .then(function(r){var i=r&&+r.index;var q=list[i];if(!q||i!==Math.floor(i))throw new Error('bad');reply(q,r.why?String(r.why).slice(0,300):'')})
+   .catch(function(){reply(qBest(t),'(Matched by keywords. The AI could not answer right now.)')}).then(function(){b.disabled=false;$('qMsg').textContent=''})};
+
 /* manual add / edit */
 function openFood(en){fEdit=en||null;$('fTitle').textContent=en?'Edit food':'Add food';
   $('fName').value=en?en.name:'';$('fSlot2').value=en?en.slot:$('fslot').value;$('fK').value=en?en.kcal:'';$('fP').value=en?en.p:'';$('fC').value=en?en.c:'';$('fF').value=en?en.f:'';
@@ -1143,7 +1187,7 @@ if(CFG.ai){sm=aiShim;smImg=true}smTried=true;
 $('gConnect').onclick=gConnectClick;
 load();primeSnap();gMcpTried=true;if(CFG.gcal){mcp=gShim}else{gState='nomcp'}
 notifLabel();try{if('Notification' in window&&Notification.permission==='granted')enablePush()}catch(e){}render();check();setInterval(check,15000);
-if(CFG.gcal)gWatch(true);setupClassroom();if(CFG.mail)loadOrders();if(location.hash==='#orders')tab='orders';if(location.hash==='#health')tab='food';if(location.hash==='#shop')tab='shop';
+if(CFG.gcal)gWatch(true);setupClassroom();if(CFG.mail)loadOrders();if(location.hash==='#orders')tab='orders';if(location.hash==='#health')tab='food';if(location.hash==='#shop')tab='shop';if(location.hash==='#quotes')tab='quotes';
 }
 Promise.all([fetch('/api/state').then(function(r){if(!r.ok)throw 0;return r.json()}),fetch('/api/config').then(function(r){if(!r.ok)throw 0;return r.json()})]).then(function(a){boot(a[0],a[1])}).catch(function(){document.body.innerHTML='<p style="padding:24px;font-family:sans-serif">Could not load your data. Check your connection and reload.</p>'});
 </script>

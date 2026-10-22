@@ -157,7 +157,7 @@ const delSetting = (env, owner, key) =>
 
 async function getState(env, owner) {
   const cutoff = new Date(Date.now() - 120 * 86400000).toISOString().slice(0, 10);
-  const [t, f, m, goal, wk, wt, burn, wmins, sh] = await Promise.all([
+  const [t, f, m, goal, wk, wt, burn, wmins, sh, qt] = await Promise.all([
     env.DB.prepare('SELECT id,text,due,dur,snooze,fired,tag,urgent,important,done,rec,gcal_id FROM tasks WHERE owner=?').bind(owner).all(),
     env.DB.prepare('SELECT id,day,slot,name,kcal,p,c,f FROM food WHERE owner=? AND day>=?').bind(owner, cutoff).all(),
     env.DB.prepare('SELECT id,name,servings,ing FROM meals WHERE owner=?').bind(owner).all(),
@@ -167,6 +167,7 @@ async function getState(env, owner) {
     getSetting(env, owner, 'burn'),
     getSetting(env, owner, 'wmins'),
     env.DB.prepare('SELECT id,name,done FROM shop WHERE owner=?').bind(owner).all(),
+    env.DB.prepare('SELECT id,text,author FROM quotes WHERE owner=? ORDER BY added').bind(owner).all(),
   ]);
   return {
     tasks: t.results.map(({ gcal_id, ...r }) => ({ ...r, urgent: !!r.urgent, important: !!r.important, done: !!r.done, gcal: !!gcal_id })),
@@ -180,6 +181,7 @@ async function getState(env, owner) {
     work: wk.results,
     weights: wt.results,
     shop: sh.results.map((r) => ({ id: r.id, name: r.name, done: !!r.done })),
+    quotes: qt.results,
     burn: Number(burn) > 0 ? Number(burn) : 300,
     wmins: Number(wmins) > 0 ? Number(wmins) : 30,
   };
@@ -270,6 +272,20 @@ async function applySync(env, owner, b) {
   }
   for (const id of list(b.shop?.del)) {
     if (RE_ID.test(String(id))) stmts.push(db.prepare('DELETE FROM shop WHERE owner=? AND id=?').bind(owner, String(id)));
+  }
+  for (const e of list(b.quotes?.upsert)) {
+    if (!e || !RE_ID.test(String(e.id))) continue;
+    const text = str(e.text, 1000).trim();
+    if (!text) continue;
+    stmts.push(
+      db.prepare(
+        `INSERT INTO quotes(owner,id,text,author,added) VALUES(?,?,?,?,?)
+         ON CONFLICT(owner,id) DO UPDATE SET text=excluded.text,author=excluded.author`
+      ).bind(owner, String(e.id), text, str(e.author, 120).trim(), now)
+    );
+  }
+  for (const id of list(b.quotes?.del)) {
+    if (RE_ID.test(String(id))) stmts.push(db.prepare('DELETE FROM quotes WHERE owner=? AND id=?').bind(owner, String(id)));
   }
   for (const e of list(b.work?.upsert)) {
     if (!e || !RE_ID.test(String(e.id)) || !RE_DAY.test(String(e.day))) continue;
@@ -1112,6 +1128,7 @@ async function exportAll(env, owner) {
     meals: await q('SELECT id,name,servings,ing FROM meals WHERE owner=?'),
     workouts: await q('SELECT id,day,kind,mins,kcal FROM workouts WHERE owner=?'),
     weights: await q('SELECT id,day,kg FROM weights WHERE owner=?'),
+    quotes: await q('SELECT id,text,author FROM quotes WHERE owner=?'),
     shopping: await q('SELECT id,name,done FROM shop WHERE owner=?'),
     orders: await q('SELECT shop,item,order_no,status,placed,updated FROM orders WHERE owner=? AND hidden=0'),
   };
