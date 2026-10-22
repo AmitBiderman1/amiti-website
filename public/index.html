@@ -257,7 +257,7 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
   </section>
 
   <section id="v-recipes" class="hide">
-    <a class="btn p" href="/bakery.html" style="display:block;text-align:center;text-decoration:none;margin-bottom:10px">🧁 Open the bakery (המאפייה)</a>
+    <a class="btn p" href="/recipes.html" style="display:block;text-align:center;text-decoration:none;margin-bottom:10px">🧁 Open the bakery (המאפייה)</a>
     <div class="card">
       <h2>Add a recipe</h2>
       <textarea id="rcIn" placeholder="Paste a link (TikTok, Instagram, any recipe site) or the recipe text…" maxlength="8000"></textarea>
@@ -935,7 +935,7 @@ function checkOrdersNow(){if(ordBusy)return;ordBusy=true;renderOrders();
 var TABS=[['today','Today'],['tasks','Tasks'],['orders','Orders'],['cal','Calendar'],['food','Health'],['shop','Shopping'],['quotes','Quotes'],['inbox','Inbox'],['recipes','Recipes']];
 
 function renderNav(){var n=$('nav');n.innerHTML='';
-  TABS.forEach(function(x){var b=document.createElement('button');b.textContent=x[1];b.className=tab===x[0]?'on':'';b.onclick=function(){tab=x[0];openSn=null;render()};n.appendChild(b)});
+  TABS.forEach(function(x){var b=document.createElement('button');b.textContent=x[1];b.className=tab===x[0]?'on':'';b.onclick=function(){if(x[0]==='recipes'){location.href='/recipes.html';return}tab=x[0];openSn=null;render()};n.appendChild(b)});
   TABS.forEach(function(x){$('v-'+x[0]).classList.toggle('hide',tab!==x[0])})}
 function render(){renderNav();renderAlerts();if(tab==='today')renderToday();else if(tab==='tasks')renderTasks();else if(tab==='orders')renderOrders();else if(tab==='food')renderFood();else if(tab==='shop')renderShop();else if(tab==='quotes')renderQuotes();else if(tab==='inbox')renderInbox();else if(tab==='recipes')renderRecipes();else renderCal()}
 
@@ -1276,7 +1276,7 @@ $('fab').onclick=function(){openQuick('')};
 $('qqText').oninput=function(){$('qqHint').textContent=firstUrl($('qqText').value)?'This looks like a link. Save it as a recipe, or add it as a task.':''};
 $('qqCancel').onclick=function(){$('dlgQ').close()};
 $('formQ').onsubmit=function(e){e.preventDefault();var v=$('qqText').value.trim();if(!v)return;$('dlgQ').close();goTab('tasks');$('qaText').value=v.slice(0,200);$('qaForm').onsubmit({preventDefault:function(){}})};
-$('qqRecipe').onclick=function(){var v=$('qqText').value.trim();if(!v)return;$('dlgQ').close();goTab('recipes');$('rcIn').value=v;importRecipe(v,null)};
+$('qqRecipe').onclick=function(){var v=$('qqText').value.trim();if(!v)return;location.href='/recipes.html?add='+encodeURIComponent(v)};
 (function(){try{var q=new URLSearchParams(location.search),sh=[q.get('url'),q.get('text'),q.get('title')].filter(Boolean).join(' ').trim();
   if(sh){history.replaceState(null,'',location.pathname);setTimeout(function(){openQuick(sh)},600)}}catch(e){}})();
 
@@ -1380,7 +1380,7 @@ if(CFG.ai){sm=aiShim;smImg=true}smTried=true;
 $('gConnect').onclick=gConnectClick;
 load();primeSnap();gMcpTried=true;if(CFG.gcal){mcp=gShim}else{gState='nomcp'}
 notifLabel();try{if('Notification' in window&&Notification.permission==='granted')enablePush()}catch(e){}render();check();setInterval(check,15000);
-if(CFG.gcal)gWatch(true);setupClassroom();if(CFG.mail){loadOrders();loadMailToday()}if(location.hash==='#orders')tab='orders';if(location.hash==='#health')tab='food';if(location.hash==='#shop')tab='shop';if(location.hash==='#quotes')tab='quotes';if(location.hash==='#inbox')tab='inbox';if(location.hash==='#recipes')tab='recipes';
+if(CFG.gcal)gWatch(true);setupClassroom();if(CFG.mail){loadOrders();loadMailToday()}if(location.hash==='#orders')tab='orders';if(location.hash==='#health')tab='food';if(location.hash==='#shop')tab='shop';if(location.hash==='#quotes')tab='quotes';if(location.hash==='#inbox')tab='inbox';if(location.hash==='#recipes'){location.replace('/recipes.html');return}var hh=location.hash.slice(1);if(hh&&TABS.some(function(x){return x[0]===hh&&hh!=='recipes'}))tab=hh;
 }
 Promise.all([fetch('/api/state').then(function(r){if(!r.ok)throw 0;return r.json()}),fetch('/api/config').then(function(r){if(!r.ok)throw 0;return r.json()})]).then(function(a){boot(a[0],a[1])}).catch(function(){document.body.innerHTML='<p style="padding:24px;font-family:sans-serif">Could not load your data. Check your connection and reload.</p>'});
 </script>

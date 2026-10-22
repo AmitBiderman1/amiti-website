@@ -168,7 +168,7 @@ async function getState(env, owner) {
     getSetting(env, owner, 'wmins'),
     env.DB.prepare('SELECT id,name,done,rid,rname FROM shop WHERE owner=?').bind(owner).all(),
     env.DB.prepare('SELECT id,text,author FROM quotes WHERE owner=? ORDER BY added').bind(owner).all(),
-    env.DB.prepare('SELECT id,title,source,servings,ing,steps,notes,img FROM recipes WHERE owner=? ORDER BY added').bind(owner).all(),
+    env.DB.prepare('SELECT id,title,source,servings,ing,steps,notes,img,cat FROM recipes WHERE owner=? ORDER BY added').bind(owner).all(),
   ]);
   return {
     tasks: t.results.map(({ gcal_id, ...r }) => ({ ...r, urgent: !!r.urgent, important: !!r.important, done: !!r.done, gcal: !!gcal_id })),
@@ -285,9 +285,9 @@ async function applySync(env, owner, b) {
     const arr = (x, n, len) => (Array.isArray(x) ? x : []).slice(0, n).map((t) => str(t, len).trim()).filter(Boolean);
     stmts.push(
       db.prepare(
-        `INSERT INTO recipes(owner,id,title,source,servings,ing,steps,notes,img,added) VALUES(?,?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(owner,id) DO UPDATE SET title=excluded.title,source=excluded.source,servings=excluded.servings,ing=excluded.ing,steps=excluded.steps,notes=excluded.notes,img=excluded.img`
-      ).bind(owner, String(e.id), title, str(e.source, 500), str(e.servings, 40), JSON.stringify(arr(e.ing, 100, 200)), JSON.stringify(arr(e.steps, 80, 1200)), str(e.notes, 1500), /^https:\/\//.test(String(e.img)) ? str(e.img, 600) : '', now)
+        `INSERT INTO recipes(owner,id,title,source,servings,ing,steps,notes,img,added,cat) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(owner,id) DO UPDATE SET title=excluded.title,source=excluded.source,servings=excluded.servings,ing=excluded.ing,steps=excluded.steps,notes=excluded.notes,img=excluded.img,cat=excluded.cat`
+      ).bind(owner, String(e.id), title, str(e.source, 500), str(e.servings, 40), JSON.stringify(arr(e.ing, 100, 200)), JSON.stringify(arr(e.steps, 80, 1200)), str(e.notes, 1500), /^https:\/\//.test(String(e.img)) ? str(e.img, 600) : '', now, str(e.cat, 30).trim())
     );
   }
   for (const id of list(b.recipes?.del, 100)) {
@@ -1313,6 +1313,7 @@ function recipeFromJsonLd(html) {
   }
   return null;
 }
+const BROWSER_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
 async function readRecipePage(rawUrl) {
   let u;
   try { u = new URL(String(rawUrl).trim()); } catch { return { error: 'bad_url' }; }
@@ -1321,14 +1322,20 @@ async function readRecipePage(rawUrl) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 9000);
   try {
+    const social = /(^|\.)(tiktok\.com|instagram\.com|facebook\.com|fb\.watch)$/.test(host);
     if (/(^|\.)tiktok\.com$/.test(host)) {
-      const r = await fetch('https://www.tiktok.com/oembed?url=' + encodeURIComponent(u.href), { signal: ctl.signal });
+      // short share links (vm./vt.tiktok.com) must be resolved to the full video address first
+      let full = u.href;
+      if (/^(vm|vt)\./.test(host)) {
+        try { const h = await fetch(u.href, { signal: ctl.signal, redirect: 'follow', headers: { 'user-agent': BROWSER_UA } }); if (/tiktok\.com\/@/.test(h.url)) full = h.url.split('?')[0]; } catch { /* keep the short link */ }
+      }
+      const r = await fetch('https://www.tiktok.com/oembed?url=' + encodeURIComponent(full), { signal: ctl.signal, headers: { 'user-agent': BROWSER_UA } });
       if (r.ok) {
         const j = await r.json().catch(() => ({}));
-        if (j.title) return { text: String(j.title).slice(0, 4000), title: '', img: typeof j.thumbnail_url === 'string' && j.thumbnail_url.startsWith('https://') ? j.thumbnail_url : '', source: u.href, kind: 'caption' };
+        if (j.title) return { text: String(j.title).slice(0, 4000), title: '', img: typeof j.thumbnail_url === 'string' && j.thumbnail_url.startsWith('https://') ? j.thumbnail_url : '', source: full, kind: 'caption' };
       }
     }
-    const r = await fetch(u.href, { signal: ctl.signal, redirect: 'follow', headers: { 'user-agent': 'Mozilla/5.0 (compatible; AmitisRecipeReader/1.0)', accept: 'text/html,application/xhtml+xml', 'accept-language': 'en,he;q=0.8' } });
+    const r = await fetch(u.href, { signal: ctl.signal, redirect: 'follow', headers: { 'user-agent': social ? BROWSER_UA : 'Mozilla/5.0 (compatible; AmitisRecipeReader/1.0)', accept: 'text/html,application/xhtml+xml', 'accept-language': 'en,he;q=0.8' } });
     if (!r.ok) return { error: 'unreadable', status: r.status };
     const html = (await r.text()).slice(0, 600000);
     const rec = recipeFromJsonLd(html);
@@ -1534,7 +1541,7 @@ async function exportAll(env, owner) {
     meals: await q('SELECT id,name,servings,ing FROM meals WHERE owner=?'),
     workouts: await q('SELECT id,day,kind,mins,kcal FROM workouts WHERE owner=?'),
     weights: await q('SELECT id,day,kg FROM weights WHERE owner=?'),
-    recipes: await q('SELECT id,title,source,servings,ing,steps,notes FROM recipes WHERE owner=?'),
+    recipes: await q('SELECT id,title,source,servings,ing,steps,notes,cat FROM recipes WHERE owner=?'),
     quotes: await q('SELECT id,text,author FROM quotes WHERE owner=?'),
     mails: await q('SELECT id,sender,addr,subject,date,folder,trip,important FROM mails WHERE owner=? AND deleted=0'),
     mail_rules: await q('SELECT addr,folder,trip FROM mail_rules WHERE owner=?'),
