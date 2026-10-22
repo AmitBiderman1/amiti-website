@@ -1382,19 +1382,46 @@ async function readRecipePage(rawUrl) {
   const timer = setTimeout(() => ctl.abort(), 9000);
   try {
     let why = '';
+    let tkFull = u.href;
+    let tkCap = null;
     const social = /(^|\.)(tiktok\.com|instagram\.com|facebook\.com|fb\.watch)$/.test(host);
     if (/(^|\.)tiktok\.com$/.test(host)) {
       // short share links (vm./vt.tiktok.com) must be resolved to the full video address first
       let full = u.href;
       if (/^(vm|vt)\./.test(host)) {
-        try { const h = await fetch(u.href, { signal: ctl.signal, redirect: 'follow', headers: { 'user-agent': BROWSER_UA } }); if (/tiktok\.com\/@/.test(h.url)) full = h.url.split('?')[0]; } catch { /* keep the short link */ }
+        try { const h = await fetch(u.href, { signal: ctl.signal, redirect: 'follow', headers: { 'user-agent': BROWSER_UA } }); if (/tiktok\.com\/@/.test(h.url)) full = h.url.split('?')[0]; tkFull = full; } catch { /* keep the short link */ }
       }
       const r = await fetch('https://www.tiktok.com/oembed?url=' + encodeURIComponent(full), { signal: ctl.signal, headers: { 'user-agent': BROWSER_UA } });
       if (r.ok) {
         const j = await r.json().catch(() => ({}));
-        if (j.title) return { text: String(j.title).slice(0, 4000), title: '', img: typeof j.thumbnail_url === 'string' && j.thumbnail_url.startsWith('https://') ? j.thumbnail_url : '', source: full, kind: 'caption' };
+        if (j.title) tkCap = { text: String(j.title).slice(0, 4000), title: '', img: typeof j.thumbnail_url === 'string' && j.thumbnail_url.startsWith('https://') ? j.thumbnail_url : '', source: full, kind: 'caption' };
         why = 'tiktok_no_caption';
       } else why = 'tiktok_' + r.status;
+    }
+    if (/(^|\.)tiktok\.com$/.test(host)) {
+      // The video page embeds its data: caption, slides of photo posts, and auto-generated subtitles when they exist.
+      try {
+        const pr = await fetch(tkFull, { signal: ctl.signal, redirect: 'follow', headers: { 'user-agent': BROWSER_UA, 'accept-language': 'en,he;q=0.8' } });
+        if (pr.ok) {
+          const ph = await pr.text();
+          const dm = /<script[^>]+id=["']__UNIVERSAL_DATA_FOR_REHYDRATION__["'][^>]*>([\s\S]*?)<\/script>/.exec(ph);
+          const data = dm ? JSON.parse(dm[1]) : null;
+          const item = data?.__DEFAULT_SCOPE__?.['webapp.video-detail']?.itemInfo?.itemStruct;
+          if (item) {
+            const slides = (item.imagePost?.images || []).map((x) => x?.imageURL?.urlList?.[0]).filter((x) => typeof x === 'string' && x.startsWith('https://')).slice(0, 10);
+            let transcript = '';
+            const sub = (item.video?.subtitleInfos || []).find((x) => x.Url && /webvtt|vtt/i.test(x.Format || 'vtt')) || (item.video?.subtitleInfos || [])[0];
+            if (sub?.Url && String(sub.Url).startsWith('https://')) {
+              const t = await fetch(sub.Url, { signal: ctl.signal }).then((x) => (x.ok ? x.text() : '')).catch(() => '');
+              transcript = t.split('\n').filter((l) => l && !/^WEBVTT|-->|^\d+$/.test(l.trim())).join(' ').slice(0, 5000);
+            }
+            const cap = String(item.desc || '').slice(0, 2000);
+            if (slides.length || transcript) return { text: [cap, transcript].filter(Boolean).join('\n\n'), images: slides, title: '', img: slides[0] || '', source: tkFull, kind: slides.length ? 'photos' : 'subtitles' };
+            if (cap && !tkCap) tkCap = { text: cap, title: '', img: '', source: tkFull, kind: 'caption' };
+          } else why = why || 'tiktok_no_data';
+        } else why = why || 'tiktok_page_' + pr.status;
+      } catch { why = why || 'tiktok_page_failed'; }
+      if (tkCap) return tkCap;
     }
     const r = await fetch(u.href, { signal: ctl.signal, redirect: 'follow', headers: { 'user-agent': social ? BROWSER_UA : 'Mozilla/5.0 (compatible; AmitisRecipeReader/1.0)', accept: 'text/html,application/xhtml+xml', 'accept-language': 'en,he;q=0.8' } });
     if (!r.ok) return { error: 'unreadable', status: r.status, why: why || 'http_' + r.status };
@@ -1825,6 +1852,84 @@ async function notionSync(env, owner) {
   return stats;
 }
 
+/* ---------- Background recipe import (you add a link, text or screenshot; it is read and saved while you do something else) ---------- */
+const RECIPE_PROMPT = 'You turn a recipe (a web page, a social-media caption, a transcript or photos/screenshots, possibly several in order) into structured data. Keep the language of the source (Hebrew stays Hebrew). Reply with ONLY a JSON object: {"title": short recipe name, "category": exactly one of [' + NOTION_CATS.join(' | ') + '], "servings": text like "4" or "", "ingredients": [each ingredient as one string with its amount, e.g. "2 ביצים"], "steps": [short instruction strings in order], "notes": ""}. Use only what is in the source; do not invent ingredients. If there is no recipe at all, reply {"title":"","ingredients":[],"steps":[]}.';
+function parseJsonObj(t) {
+  const x = String(t || '');
+  const a = x.indexOf('{'), b = x.lastIndexOf('}');
+  if (a < 0 || b < a) return null;
+  try { return JSON.parse(x.slice(a, b + 1)); } catch { return null; }
+}
+const normCatS = (c) => NOTION_CATS.find((x) => x === String(c || '').trim()) || NOTION_CATS.find((x) => String(c || '').includes(x)) || 'Other';
+// Plain "ask the AI" for server jobs: Claude key, else Gemini, else Workers AI (first image only).
+async function aiRaw(env, content, images) {
+  const merged = [{ role: 'user', content }];
+  if (env.ANTHROPIC_API_KEY) { const r = await aiClaude(env, merged, images.slice(0, 8)); const j = await r.json().catch(() => ({})); if (r.ok && j.text) return j.text; throw new Error('ai_failed'); }
+  const errs = [];
+  if (env.GEMINI_API_KEY) { const g = await aiGemini(env, merged, images.slice(0, 10), errs); if (g) return (await g.json()).text; }
+  if (env.AI) { const w = await aiWorkers(env, merged, images.slice(0, 1)); const j = await w.json().catch(() => ({})); if (w.status === 429) throw new Error('ai_limit'); if (w.ok && j.text) return j.text; errs.push(String(j.detail || '').slice(0, 120)); }
+  throw new Error('ai_failed ' + errs.join(' | ').slice(0, 200));
+}
+const toB64 = (buf) => { const u = new Uint8Array(buf); let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(s); };
+async function fetchImages(urls) {
+  const out = [];
+  await Promise.all(urls.slice(0, 8).map(async (u, i) => {
+    try {
+      const r = await fetch(u, { headers: { 'user-agent': BROWSER_UA } });
+      if (!r.ok) return;
+      const buf = await r.arrayBuffer();
+      if (buf.byteLength > 4_000_000) return;
+      const ct = (r.headers.get('content-type') || 'image/jpeg').split(';')[0];
+      out[i] = { media_type: /^image\/(jpeg|png|webp|gif)$/.test(ct) ? ct : 'image/jpeg', data: toB64(buf) };
+    } catch { /* skip this slide */ }
+  }));
+  return out.filter(Boolean);
+}
+async function importRecipe(env, owner, input) {
+  const url = (/https?:\/\/[^\s<>"']+/i.exec(input.text || '') || [''])[0].replace(/[).,;]+$/, '');
+  const rest = String(input.text || '').replace(url, '').trim();
+  let content = '', images = [], src = '', img = '', rec = null;
+  if (input.image) {
+    images = [input.image];
+    content = RECIPE_PROMPT + '\n\nThe attached photo shows the recipe.';
+  } else if (url && rest.length < 300) {
+    const rd = await readRecipePage(url);
+    src = rd.source || url; img = rd.img || '';
+    if (rd.recipe && (rd.recipe.ingredients.length || rd.recipe.steps.length)) {
+      rec = rd.recipe; img = rec.img || img;
+      try { const o = parseJsonObj(await aiRaw(env, RECIPE_PROMPT + '\n\nTitle: ' + rec.title + '\nIngredients: ' + rec.ingredients.join('; '), [])); rec.category = o?.category; } catch { /* keep Other */ }
+    } else if (rd.images && rd.images.length) {
+      images = await fetchImages(rd.images);
+      content = RECIPE_PROMPT + '\n\nCaption: ' + (rd.text || '') + '\n\nThe attached images are the slides of the post, in order.';
+    } else if (rd.text) {
+      content = RECIPE_PROMPT + '\n\nSource:\n' + (rest ? rest + '\n' : '') + rd.text.slice(0, 7000);
+    } else if (rest.length >= 25) {
+      content = RECIPE_PROMPT + '\n\nSource:\n' + rest;
+    } else throw new Error('unreadable' + (rd.why ? ':' + rd.why : ''));
+  } else {
+    content = RECIPE_PROMPT + '\n\nSource:\n' + String(input.text || '').slice(0, 7000);
+    src = url;
+  }
+  if (!rec) {
+    const o = parseJsonObj(await aiRaw(env, content, images));
+    if (!o) throw new Error('no_recipe');
+    rec = { title: o.title, servings: o.servings, ingredients: o.ingredients || o.ing, steps: o.steps, notes: o.notes, category: o.category };
+  }
+  const ing = (rec.ingredients || []).map((x) => String(x).trim().slice(0, 200)).filter(Boolean).slice(0, 100);
+  const steps = (rec.steps || []).map((x) => String(x).trim().slice(0, 1200)).filter(Boolean).slice(0, 80);
+  const title = String(rec.title || '').trim().slice(0, 160);
+  if (!title || (!ing.length && !steps.length)) throw new Error('no_recipe');
+  const id = newId();
+  await env.DB.prepare('INSERT INTO recipes(owner,id,title,source,servings,ing,steps,notes,img,added,cat) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+    .bind(owner, id, title, str(src, 500), str(rec.servings, 40), JSON.stringify(ing), JSON.stringify(steps), str(rec.notes, 1500), /^https:\/\//.test(img) ? str(img, 600) : '', new Date().toISOString(), normCatS(rec.category)).run();
+  return { id, title };
+}
+async function runImportJob(env, owner, jobId, input) {
+  let status = 'done', error = '', rid = '', title = '';
+  try { const r = await importRecipe(env, owner, input); rid = r.id; title = r.title; } catch (e) { status = 'failed'; error = String(e && e.message || e).slice(0, 160); }
+  await env.DB.prepare('UPDATE recipe_jobs SET status=?,error=?,rid=?,label=CASE WHEN ?<>\'\' THEN ? ELSE label END WHERE owner=? AND id=?').bind(status, error, rid, title, title, owner, jobId).run().catch(() => {});
+}
+
 async function exportAll(env, owner) {
   const q = (sql) => env.DB.prepare(sql).bind(owner).all().then((r) => r.results);
   return {
@@ -1922,6 +2027,30 @@ export default {
             return fail(e.message === 'needs_reauth' ? 401 : 502, 'Gmail error', e.message === 'needs_reauth' ? 'needs_reauth' : String(e.message || 'upstream_error').slice(0, 40));
           }
           return json(res);
+        }
+        case 'POST /api/recipes/import': {
+          let b;
+          try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
+          const im = b?.image;
+          const input = im && typeof im.data === 'string' && im.data.length < 7_000_000 && /^image\/(jpeg|png|webp|gif)$/.test(String(im.media_type)) ? { image: { media_type: im.media_type, data: im.data } } : { text: str(b?.text, 8000).trim() };
+          if (!input.image && !input.text) return fail(400, 'Nothing to import', 'bad_request');
+          const jid = newId();
+          const label = input.image ? 'Screenshot' : (/https?:\/\/([^\/\s]+)/.exec(input.text) || [])[1] || input.text.slice(0, 40);
+          await env.DB.prepare("DELETE FROM recipe_jobs WHERE owner=? AND created<?").bind(owner, new Date(Date.now() - 2 * 86400000).toISOString()).run();
+          await env.DB.prepare("INSERT INTO recipe_jobs(owner,id,label,status,created) VALUES(?,?,?,'working',?)").bind(owner, jid, str(label, 80), new Date().toISOString()).run();
+          await background(ctx, runImportJob(env, owner, jid, input));
+          return json({ job: jid });
+        }
+        case 'GET /api/recipes/jobs': {
+          const rows = await env.DB.prepare("SELECT id,label,status,error,rid,created FROM recipe_jobs WHERE owner=? AND created>? ORDER BY created DESC LIMIT 20").bind(owner, new Date(Date.now() - 3 * 3600000).toISOString()).all();
+          // a job that has been "working" for over 3 minutes was cut off by the server; report it so it does not spin forever
+          return json({ jobs: rows.results });
+        }
+        case 'POST /api/recipes/jobs/clear': {
+          let b;
+          try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
+          if (RE_ID.test(String(b?.id || ''))) await env.DB.prepare('DELETE FROM recipe_jobs WHERE owner=? AND id=?').bind(owner, String(b.id)).run();
+          return json({ ok: true });
         }
         case 'POST /api/notion/sync':
           return json(await notionSync(env, owner));

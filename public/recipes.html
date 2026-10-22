@@ -74,7 +74,7 @@ var $=function(i){return document.getElementById(i)};
 var CATS=[['Baking & dough','🥖'],['Cakes & desserts','🍰'],['Meat','🥩'],['Chicken','🍗'],['Fish','🐟'],['Vegetarian & vegan','🥬'],['Pasta & rice','🍝'],['Soups','🍲'],['Salads & sides','🥗'],['Breakfast','🍳'],['Snacks & drinks','🥤'],['Healthy & light','🥑'],['Other','🍽️']];
 var LEG={'אפייה ובצקים':'Baking & dough','עוגות וקינוחים':'Cakes & desserts','בשרי':'Meat','עוף':'Chicken','דגים':'Fish','צמחוני וטבעוני':'Vegetarian & vegan','פסטה ואורז':'Pasta & rice','מרקים':'Soups','סלטים ותוספות':'Salads & sides','ארוחות בוקר':'Breakfast','חטיפים ומשקאות':'Snacks & drinks','בריא וקל':'Healthy & light','אחר':'Other'};
 var EM={};CATS.forEach(function(c){EM[c[0]]=c[1]});
-var S={recipes:[],shop:[],view:'list',cur:null,add:false,busy:false,msg:'',err:false,sel:{},cd:false,cat:'',prefill:''};
+var S={jobs:[],recipes:[],shop:[],view:'list',cur:null,add:false,busy:false,msg:'',err:false,sel:{},cd:false,cat:'',prefill:''};
 var NOTION=false,GEM=false,nMsg='',nT=null,CFGOK=false;
 var snap={recipes:{},shop:{}},syncBusy=false,syncDirty=false,syncT=null,failN=0;
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
@@ -128,6 +128,19 @@ function imp(input,photo){
     throw{code:'unreadable'}});
   else p=ask(input).then(function(o){return mk(o,url,'')});
   return p.then(function(r){if(!r)throw{code:'no_recipe'};return r})}
+/* background imports: the server reads the link/screenshot and saves the recipe by itself */
+var jobT=null;
+function jobText(j){var e=j.error||'';
+  if(/^no_recipe/.test(e))return 'No recipe found there. In videos it is often not written anywhere – add a screenshot of the recipe instead.';
+  if(/^unreadable/.test(e))return 'Could not read this link'+(e.indexOf(':')>0?' ['+e.split(':')[1]+']':'')+'. Paste the caption or add a screenshot.';
+  if(/^ai_limit/.test(e))return 'The free AI hit today’s limit, try later.';
+  return 'Failed ['+e.slice(0,100)+']'}
+function pollJobs(){clearTimeout(jobT);fetch('/api/recipes/jobs').then(function(r){return r.json()}).then(function(j){
+  var was=S.jobs;S.jobs=j.jobs||[];
+  var fin=was.some(function(w){return w.status==='working'&&S.jobs.some(function(x){return x.id===w.id&&x.status==='done'})});
+  if(fin){load();nTick(2000)}else if(S.view==='list')render();
+  if(S.jobs.some(function(x){return x.status==='working'&&Date.now()-new Date(x.created).getTime()<240000}))jobT=setTimeout(pollJobs,3000)}).catch(function(){})}
+function clearJob(id){S.jobs=S.jobs.filter(function(x){return x.id!==id});fetch('/api/recipes/jobs/clear',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:id})}).catch(function(){});render()}
 /* put old recipes without a category into the right style, quietly */
 var sorting=false;
 function autoSort(){var ch=false;S.recipes.forEach(function(r){if(LEG[r.cat]){r.cat=LEG[r.cat];ch=true}});if(ch){save();render()}
@@ -139,6 +152,8 @@ function render(){if(S.view==='one')oneView();else listView()}
 function listView(){var h='<div class="hero"><div class="big">🍳🥘🍰</div><div><b>My recipes</b><div class="sub">'+S.recipes.length+' recipes, grouped by style</div></div></div>';
   if(S.add){h+='<div class="card"><h2>New recipe</h2><p class="sub">Paste a link (TikTok, Instagram, any site), a caption or the recipe text, or add a screenshot.</p><textarea id="in" dir="auto" placeholder="Paste here…">'+esc(S.prefill)+'</textarea><div class="fr" style="margin-top:8px"><button class="btn p" id="go"'+(S.busy?' disabled':'')+'>'+(S.busy?'Writing…':'Write the recipe')+'</button><label class="btn" for="ph">📷 Screenshot</label><input id="ph" type="file" accept="image/*" hidden><button class="btn" id="cx">Cancel</button></div><div class="st'+(S.err?' err':'')+'" style="margin-top:8px">'+esc(S.msg)+'</div></div>'}
   else{h+='<div class="top"><button class="btn p" id="new">＋ New recipe</button></div>';if(S.msg)h+='<div class="st'+(S.err?' err':'')+'" style="margin-bottom:8px">'+esc(S.msg)+'</div>'}
+  S.jobs.forEach(function(j){var stuck=j.status==='working'&&Date.now()-new Date(j.created).getTime()>=240000;
+    h+='<div class="rc" style="cursor:default;'+(j.status==='failed'||stuck?'border-color:#c0392b':'')+'"><span class="em">'+(j.status==='done'?'✓':j.status==='failed'||stuck?'⚠️':'⏳')+'</span><div class="tx"><b dir="auto">'+(j.status==='done'?'Added: ':j.status==='working'&&!stuck?'Reading: ':'')+esc(j.label)+'</b><small>'+(j.status==='failed'?esc(jobText(j)):stuck?'This took too long and was cut off. Try again.':j.status==='done'?'Saved to your recipes':'You can leave this page, it will be saved')+'</small></div>'+(j.status==='done'&&j.rid?'<button class="btn" data-open="'+esc(j.rid)+'" data-job="'+esc(j.id)+'">Open</button>':'')+(j.status!=='working'||stuck?'<button class="x" data-clr="'+esc(j.id)+'" aria-label="Dismiss">×</button>':'')+'</div>'});
   var used={};S.recipes.forEach(function(r){var k=normCat(r.cat||'Other');used[k]=(used[k]||0)+1});
   if(S.recipes.length>1){h+='<div class="chips"><button class="chip'+(S.cat?'':' on')+'" data-c="">All</button>';CATS.forEach(function(c){if(used[c[0]])h+='<button class="chip'+(S.cat===c[0]?' on':'')+'" data-c="'+esc(c[0])+'">'+c[1]+' '+esc(c[0])+' ('+used[c[0]]+')</button>'});h+='</div>'}
   if(!S.recipes.length&&!S.add)h+='<div class="empty">🥐 🧁 🍪<br>No recipes yet. Tap “New recipe” and paste your first one.</div>';
@@ -151,13 +166,17 @@ function listView(){var h='<div class="hero"><div class="big">🍳🥘🍰</div>
   var b=$('new');if($('nsync'))$('nsync').onclick=function(){nRun(true)};if(b)b.onclick=function(){S.add=true;S.msg='';S.prefill='';render()};
   b=$('cx');if(b)b.onclick=function(){S.add=false;S.msg='';render()};
   function run(photo){var v=$('in').value.trim();if(!photo&&!v){S.msg='Paste something first';S.err=true;render();return}
-    S.busy=true;S.msg=photo?'Reading the screenshot…':'Reading the recipe…';S.err=false;S.prefill=v;render();
-    imp(v,photo).then(function(r){S.recipes.push(r);save();S.add=false;S.busy=false;S.prefill='';S.cur=r.id;S.view='one';S.msg='';render()}).catch(function(e){
-      var c=e&&e.code;S.busy=false;S.err=true;S.msg=c==='no_recipe'?'I could not find a recipe there. In videos the recipe is often not in the caption – paste the text or add a screenshot.':c==='unreadable'?'I could not read this link (TikTok and Instagram sometimes block it)'+(S.why?' ['+S.why+']':'')+'. Paste the caption or add a screenshot of the recipe.':c==='rate_limited'?'The free AI hit today’s limit, try later.':'Something went wrong, try again.'+(e&&e.detail?' ['+String(e.detail).slice(0,160)+']':'');render()})}
+    S.busy=true;S.msg='Sending…';S.err=false;S.prefill=v;render();
+    (photo?shrink(photo).then(b64).then(function(d){return{image:{media_type:'image/jpeg',data:d}}}):Promise.resolve({text:v}))
+      .then(function(body){return api('/api/recipes/import',body)})
+      .then(function(){S.add=false;S.busy=false;S.prefill='';S.err=false;S.msg='Added to the queue ✓ It will appear here when it is ready – you can leave this page.';pollJobs();render()})
+      .catch(function(e){S.busy=false;S.err=true;S.msg='Could not send it, try again.'+(e&&e.detail?' ['+String(e.detail).slice(0,120)+']':'');render()})}
   b=$('go');if(b)b.onclick=function(){run(null)};
   b=$('ph');if(b)b.onchange=function(){var f=this.files&&this.files[0];this.value='';if(f)run(f)};
+  Array.prototype.forEach.call($('v').querySelectorAll('[data-clr]'),function(el){el.onclick=function(){clearJob(el.getAttribute('data-clr'))}});
+  Array.prototype.forEach.call($('v').querySelectorAll('[data-open]'),function(el){el.onclick=function(){var id=el.getAttribute('data-open');clearJob(el.getAttribute('data-job'));S.cur=id;S.view='one';window.scrollTo(0,0);render()}});
   Array.prototype.forEach.call($('v').querySelectorAll('.chip'),function(el){el.onclick=function(){S.cat=el.getAttribute('data-c');render()}});
-  Array.prototype.forEach.call($('v').querySelectorAll('.rc'),function(el){el.onclick=function(){S.cur=el.getAttribute('data-id');S.view='one';S.msg='';window.scrollTo(0,0);render()}})}
+  Array.prototype.forEach.call($('v').querySelectorAll('.rc[data-id]'),function(el){el.onclick=function(){S.cur=el.getAttribute('data-id');S.view='one';S.msg='';window.scrollTo(0,0);render()}})}
 function mine(r){return S.shop.filter(function(x){return x.rid===r.id})}
 function oneView(){var r=S.recipes.filter(function(x){return x.id===S.cur})[0];if(!r){S.view='list';return render()}
   var open=mine(r).filter(function(x){return !x.done}).length,cat=r.cat||'Other';
@@ -191,6 +210,7 @@ function drawShop(r){var list=mine(r),have={};list.forEach(function(x){have[x.na
 $('dlgS').addEventListener('close',function(){render()});
 document.addEventListener('visibilitychange',function(){if(!document.hidden&&!syncBusy&&!syncT&&!$('dlgS').open)load().catch(function(){})});
 fetch('/api/config').then(function(r){return r.json()}).then(function(c){CFGOK=true;GEM=!!c.gemini;NOTION=!!c.notion;if(!NOTION)nMsg='Notion: token not found (NOTION_TOKEN secret missing)';if(NOTION){nMsg='Notion connected';render();nTick(1500)}}).catch(function(){});
+pollJobs();
 load().then(function(){try{var q=new URLSearchParams(location.search).get('add');if(q){history.replaceState(null,'',location.pathname);S.add=true;S.view='list';S.prefill=q;render()}}catch(e){}}).catch(function(){$('v').innerHTML='<div class="empty">Could not load. Check your connection and reload.</div>'});
 })();
 </script>
