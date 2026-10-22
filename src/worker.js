@@ -541,13 +541,29 @@ async function aiClaude(env, merged, images) {
 }
 
 // Free option: Google Gemini API (free tier of Google AI Studio, no card). Returns null when it fails so Workers AI can take over.
+// Google retires Gemini model names often, so ask the API which Flash models this key can use (newest first), cached for an hour.
+let geminiCache = { at: 0, list: [] };
+async function geminiModels(env, errs) {
+  if (Date.now() - geminiCache.at < 3600000 && geminiCache.list.length) return geminiCache.list;
+  try {
+    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': env.GEMINI_API_KEY } });
+    if (!r.ok) { errs.push('list models ' + r.status); return []; }
+    const j = await r.json();
+    const ver = (n) => (n.match(/(\d+(?:\.\d+)?)/) || [0, '0'])[1] * 1;
+    const ok = (j.models || []).filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => String(m.name).replace(/^models\//, ''));
+    const flash = ok.filter((n) => /^gemini-.*flash/.test(n) && !/lite|image|live|tts|audio|embed|robotics|computer|thinking-exp|-exp|latest/.test(n)).sort((a, b) => ver(b) - ver(a) || a.length - b.length);
+    const list = flash.length ? flash : ok.filter((n) => /^gemini-/.test(n) && !/image|live|tts|audio|embed|lite/.test(n)).sort((a, b) => ver(b) - ver(a));
+    geminiCache = { at: Date.now(), list: list.slice(0, 4) };
+    return geminiCache.list;
+  } catch (e) { errs.push('list models failed'); return []; }
+}
 async function aiGemini(env, merged, images, errs = []) {
   const contents = merged.map((m, i) => {
     const parts = [{ text: m.content }];
     if (i === merged.length - 1) for (const im of images) parts.push({ inline_data: { mime_type: im.media_type, data: im.data } });
     return { role: m.role === 'assistant' ? 'model' : 'user', parts };
   });
-  const models = [...new Set([env.GEMINI_MODEL, 'gemini-2.5-flash', 'gemini-2.0-flash'].filter(Boolean))];
+  const models = [...new Set([env.GEMINI_MODEL, ...(await geminiModels(env, errs)), 'gemini-2.5-flash'].filter(Boolean))].slice(0, 4);
   for (const model of models) {
     try {
       const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
