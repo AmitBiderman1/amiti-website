@@ -129,3 +129,7 @@ The 💾 button in the header downloads all your tasks, food, meals and orders a
 ## Database changes
 
 Run the files in `migrations/` once, in order, against the remote database (`001_gcal_id.sql`, `002_classroom_orders.sql`, `003_recurring_push.sql`).
+
+
+## Notion (optional, free)
+Create an internal integration at notion.so/profile/integrations, share one Notion page with it ("Connect to"), and add its token as the `NOTION_TOKEN` secret. Recipes and the shopping list then sync both ways with two databases under that page. Run `migrations/014_notion.sql` once.

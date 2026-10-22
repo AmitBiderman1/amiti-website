@@ -1565,6 +1565,238 @@ async function scheduledRun(env) {
   return out;
 }
 
+/* ---------- Notion two-way sync (recipes + shopping list) ---------- */
+// Needs a free Notion "internal integration" token in the NOTION_TOKEN secret, shared with one Notion page.
+// Two databases are created under that page. A map table remembers which app item is which Notion page.
+const NOTION_CATS = ['Baking & dough', 'Cakes & desserts', 'Meat', 'Chicken', 'Fish', 'Vegetarian & vegan', 'Pasta & rice', 'Soups', 'Salads & sides', 'Breakfast', 'Snacks & drinks', 'Healthy & light', 'Other'];
+async function nApi(env, method, path, body) {
+  const r = await fetch('https://api.notion.com/v1' + path, {
+    method,
+    headers: { authorization: 'Bearer ' + env.NOTION_TOKEN, 'notion-version': '2022-06-28', 'content-type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (r.status === 401 || r.status === 403) throw new Error('notion_auth');
+  if (r.status === 404) throw new Error('notion_404');
+  if (r.status === 429) throw new Error('notion_rate');
+  if (!r.ok) throw new Error('notion_' + r.status);
+  return r.json();
+}
+const nPlain = (a) => (Array.isArray(a) ? a.map((x) => x.plain_text || x.text?.content || '').join('') : '');
+const nRich = (t) => {
+  const s = String(t || '');
+  const out = [];
+  for (let i = 0; i < s.length && out.length < 90; i += 1900) out.push({ type: 'text', text: { content: s.slice(i, i + 1900) } });
+  return out;
+};
+const newId = () => 'n' + crypto.randomUUID().replace(/-/g, '').slice(0, 14);
+
+async function nEnsureDbs(env, owner) {
+  let rdb = await getSetting(env, owner, 'n_rdb');
+  let sdb = await getSetting(env, owner, 'n_sdb');
+  if (rdb && sdb) return { rdb, sdb };
+  let parent = String(env.NOTION_PARENT_PAGE || '').replace(/-/g, '').match(/[0-9a-f]{32}/i)?.[0];
+  if (!parent) {
+    const s = await nApi(env, 'POST', '/search', { filter: { property: 'object', value: 'page' }, page_size: 30 });
+    const pages = (s.results || []).filter((p) => p.parent && (p.parent.type === 'workspace' || p.parent.type === 'page_id'));
+    const title = (p) => nPlain(Object.values(p.properties || {}).find((x) => x.type === 'title')?.title);
+    const pick = pages.find((p) => /amiti/i.test(title(p))) || pages[0];
+    if (!pick) throw new Error('notion_no_page');
+    parent = pick.id;
+  }
+  if (!rdb) {
+    const d = await nApi(env, 'POST', '/databases', {
+      parent: { type: 'page_id', page_id: parent }, title: [{ type: 'text', text: { content: 'Amiti’s Recipes' } }],
+      properties: { Name: { title: {} }, Style: { select: {} }, Servings: { rich_text: {} }, Source: { url: {} }, 'App ID': { rich_text: {} } },
+    });
+    rdb = d.id; await setSetting(env, owner, 'n_rdb', rdb);
+  }
+  if (!sdb) {
+    const d = await nApi(env, 'POST', '/databases', {
+      parent: { type: 'page_id', page_id: parent }, title: [{ type: 'text', text: { content: 'Amiti’s Shopping list' } }],
+      properties: { Name: { title: {} }, Bought: { checkbox: {} }, Recipe: { rich_text: {} }, 'App ID': { rich_text: {} } },
+    });
+    sdb = d.id; await setSetting(env, owner, 'n_sdb', sdb);
+  }
+  return { rdb, sdb };
+}
+async function nQueryAll(env, db) {
+  const out = [];
+  let cursor;
+  for (let i = 0; i < 4; i++) {
+    const r = await nApi(env, 'POST', `/databases/${db}/query`, { page_size: 100, ...(cursor ? { start_cursor: cursor } : {}) });
+    out.push(...(r.results || []).filter((p) => !p.archived && !p.in_trash));
+    if (!r.has_more) break;
+    cursor = r.next_cursor;
+  }
+  return out;
+}
+const nRecipeHash = (r) => shortHash(JSON.stringify([r.title, r.cat || 'Other', r.servings || '', r.source || '', r.ing, r.steps, r.notes || '']));
+const nShopHash = (s) => shortHash(JSON.stringify([s.name, s.done ? 1 : 0, s.rid || '', s.rname || '']));
+function nRecipeProps(r) {
+  return { Name: { title: nRich(r.title).slice(0, 1) }, Style: { select: { name: NOTION_CATS.includes(r.cat) ? r.cat : 'Other' } }, Servings: { rich_text: nRich(r.servings) }, Source: { url: /^https?:\/\//.test(r.source || '') ? r.source.slice(0, 1900) : null }, 'App ID': { rich_text: nRich(r.id) } };
+}
+function nRecipeBlocks(r) {
+  const b = [];
+  const h = (t) => b.push({ object: 'block', type: 'heading_2', heading_2: { rich_text: nRich(t) } });
+  if (r.ing.length) { h('Ingredients'); r.ing.forEach((t) => b.push({ object: 'block', type: 'bulleted_list_item', bulleted_list_item: { rich_text: nRich(t).slice(0, 1) } })); }
+  if (r.steps.length) { h('Method'); r.steps.forEach((t) => b.push({ object: 'block', type: 'numbered_list_item', numbered_list_item: { rich_text: nRich(t).slice(0, 1) } })); }
+  if (r.notes) { h('Notes'); b.push({ object: 'block', type: 'paragraph', paragraph: { rich_text: nRich(r.notes).slice(0, 1) } }); }
+  return b;
+}
+async function nCreateRecipe(env, db, r) {
+  const blocks = nRecipeBlocks(r);
+  const p = await nApi(env, 'POST', '/pages', { parent: { database_id: db }, properties: nRecipeProps(r), children: blocks.slice(0, 100) });
+  let t = p.last_edited_time || '';
+  for (let i = 100; i < blocks.length; i += 100) { const x = await nApi(env, 'PATCH', `/blocks/${p.id}/children`, { children: blocks.slice(i, i + 100) }); t = x.results?.[0]?.last_edited_time || t; }
+  if (blocks.length > 100) { const q = await nApi(env, 'GET', `/pages/${p.id}`); t = q.last_edited_time || t; }
+  return { id: p.id, time: t };
+}
+async function nReadRecipe(env, page) {
+  const pr = page.properties || {};
+  const title = nPlain(Object.values(pr).find((x) => x.type === 'title')?.title).trim();
+  const cat = pr.Style?.select?.name || '';
+  const blocks = (await nApi(env, 'GET', `/blocks/${page.id}/children?page_size=100`)).results || [];
+  const ing = [], steps = [], notes = [];
+  let sec = '';
+  for (const b of blocks) {
+    const t = b.type;
+    const text = nPlain(b[t]?.rich_text).trim();
+    if (/^heading_/.test(t)) { sec = /ingred|מרכיב|מצרכ/i.test(text) ? 'ing' : /method|step|instruction|הכנה|אופן/i.test(text) ? 'steps' : /note|tip|טיפ|הערה/i.test(text) ? 'notes' : sec; continue; }
+    if (!text) continue;
+    if (t === 'numbered_list_item') steps.push(text);
+    else if (t === 'bulleted_list_item' || t === 'to_do') (sec === 'steps' ? steps : ing).push(text);
+    else if (t === 'paragraph') (sec === 'ing' ? ing : sec === 'steps' ? steps : notes).push(text);
+  }
+  return {
+    title: title.slice(0, 160), cat: NOTION_CATS.includes(cat) ? cat : (cat ? 'Other' : ''),
+    servings: nPlain(pr.Servings?.rich_text).trim().slice(0, 40), source: pr.Source?.url || '',
+    ing: ing.slice(0, 100).map((x) => x.slice(0, 200)), steps: steps.slice(0, 80).map((x) => x.slice(0, 1200)), notes: notes.join('\n').slice(0, 1500),
+  };
+}
+const nShopProps = (s) => ({ Name: { title: nRich(s.name).slice(0, 1) }, Bought: { checkbox: !!s.done }, Recipe: { rich_text: nRich(s.rname || '').slice(0, 1) }, 'App ID': { rich_text: nRich(s.id) } });
+
+// Runs one pass in both directions. Safe to call often; does at most ~28 Notion writes per call (the free plan allows ~50 calls per request).
+async function notionSync(env, owner) {
+  if (!env.NOTION_TOKEN) return { ok: false, error: 'not_configured' };
+  const lock = Number(await getSetting(env, owner, 'n_lock')) || 0;
+  if (Date.now() - lock < 45000) return { ok: true, busy: true };
+  await setSetting(env, owner, 'n_lock', String(Date.now()));
+  const stats = { ok: true, pushed: 0, pulled: 0, removed: 0, more: false, changed: false };
+  let ops = 0;
+  const OPS = 26;
+  const stmts = [];
+  const db = env.DB;
+  try {
+    const { rdb, sdb } = await nEnsureDbs(env, owner);
+    const [maps, recs, shop] = await Promise.all([
+      db.prepare('SELECT kind,id,npage,hash,ntime FROM notion_map WHERE owner=?').bind(owner).all(),
+      db.prepare('SELECT id,title,source,servings,ing,steps,notes,cat FROM recipes WHERE owner=?').bind(owner).all(),
+      db.prepare('SELECT id,name,done,rid,rname FROM shop WHERE owner=?').bind(owner).all(),
+    ]);
+    const j = (t) => { try { const a = JSON.parse(t); return Array.isArray(a) ? a : []; } catch { return []; } };
+    const recipes = recs.results.map((r) => ({ ...r, ing: j(r.ing), steps: j(r.steps), cat: r.cat || 'Other' }));
+    const mapOf = { r: {}, s: {} };
+    for (const m of maps.results) if (mapOf[m.kind]) mapOf[m.kind][m.id] = m;
+    const setMap = (kind, id, npage, hash, ntime) => stmts.push(db.prepare('INSERT INTO notion_map(owner,kind,id,npage,hash,ntime) VALUES(?,?,?,?,?,?) ON CONFLICT(owner,kind,id) DO UPDATE SET npage=excluded.npage,hash=excluded.hash,ntime=excluded.ntime').bind(owner, kind, id, npage, hash, ntime));
+    const delMap = (kind, id) => stmts.push(db.prepare('DELETE FROM notion_map WHERE owner=? AND kind=? AND id=?').bind(owner, kind, id));
+    const archive = async (pageId) => { ops++; await nApi(env, 'PATCH', `/pages/${pageId}`, { archived: true }).catch((e) => { if (e.message !== 'notion_404') throw e; }); };
+    const room = () => ops < OPS;
+
+    /* ----- recipes ----- */
+    const rPages = await nQueryAll(env, rdb);
+    const rByPage = new Map(rPages.map((p) => [p.id, p]));
+    const rSeen = new Set();
+    for (const r of recipes) {
+      const m = mapOf.r[r.id];
+      const h = await nRecipeHash(r);
+      if (!m) { if (!room()) { stats.more = true; continue; } ops += 2; const c = await nCreateRecipe(env, rdb, r); setMap('r', r.id, c.id, h, c.time); stats.pushed++; continue; }
+      rSeen.add(m.id);
+      const page = rByPage.get(m.npage);
+      if (!page) { stmts.push(db.prepare('DELETE FROM recipes WHERE owner=? AND id=?').bind(owner, r.id)); delMap('r', r.id); stats.removed++; stats.changed = true; continue; }
+      if (h !== m.hash) {
+        if (!room()) { stats.more = true; continue; }
+        await archive(m.npage); ops += 2;
+        const c = await nCreateRecipe(env, rdb, r); setMap('r', r.id, c.id, h, c.time); stats.pushed++;
+      } else if (page.last_edited_time !== m.ntime) {
+        if (!room()) { stats.more = true; continue; }
+        ops++;
+        const n = await nReadRecipe(env, page);
+        if (n.title && (n.ing.length || n.steps.length)) {
+          const merged = { ...r, ...n, cat: n.cat || r.cat, source: n.source || '' };
+          stmts.push(db.prepare('UPDATE recipes SET title=?,source=?,servings=?,ing=?,steps=?,notes=?,cat=? WHERE owner=? AND id=?').bind(merged.title, merged.source, merged.servings, JSON.stringify(merged.ing), JSON.stringify(merged.steps), merged.notes, merged.cat, owner, r.id));
+          setMap('r', r.id, m.npage, await nRecipeHash(merged), page.last_edited_time);
+          stats.pulled++; stats.changed = true;
+        } else setMap('r', r.id, m.npage, m.hash, page.last_edited_time);
+      }
+    }
+    const recById = new Set(recipes.map((r) => r.id));
+    for (const m of Object.values(mapOf.r)) if (!recById.has(m.id)) { if (!room()) { stats.more = true; continue; } if (rByPage.has(m.npage)) await archive(m.npage); delMap('r', m.id); stats.removed++; }
+    const mappedPages = new Set(Object.values(mapOf.r).map((m) => m.npage));
+    for (const page of rPages) {
+      if (mappedPages.has(page.id)) continue;
+      const appId = nPlain(page.properties?.['App ID']?.rich_text).trim();
+      if (appId && recById.has(appId)) { setMap('r', appId, page.id, await nRecipeHash(recipes.find((x) => x.id === appId)), page.last_edited_time); continue; }
+      if (!room()) { stats.more = true; continue; }
+      ops++;
+      const n = await nReadRecipe(env, page);
+      if (!n.title || !(n.ing.length || n.steps.length)) continue;
+      const id = newId();
+      const rec = { id, ...n, cat: n.cat || 'Other' };
+      stmts.push(db.prepare('INSERT INTO recipes(owner,id,title,source,servings,ing,steps,notes,img,added,cat) VALUES(?,?,?,?,?,?,?,?,?,?,?)').bind(owner, id, rec.title, rec.source, rec.servings, JSON.stringify(rec.ing), JSON.stringify(rec.steps), rec.notes, '', new Date().toISOString(), rec.cat));
+      setMap('r', id, page.id, await nRecipeHash(rec), page.last_edited_time);
+      stats.pulled++; stats.changed = true;
+    }
+
+    /* ----- shopping list ----- */
+    const sPages = await nQueryAll(env, sdb);
+    const sByPage = new Map(sPages.map((p) => [p.id, p]));
+    const shopIds = new Set(shop.results.map((s) => s.id));
+    for (const s0 of shop.results) {
+      const s = { ...s0, done: !!s0.done };
+      const m = mapOf.s[s.id];
+      const h = await nShopHash(s);
+      if (!m) { if (!room()) { stats.more = true; continue; } ops++; const p = await nApi(env, 'POST', '/pages', { parent: { database_id: sdb }, properties: nShopProps(s) }); setMap('s', s.id, p.id, h, p.last_edited_time || ''); stats.pushed++; continue; }
+      const page = sByPage.get(m.npage);
+      if (!page) { stmts.push(db.prepare('DELETE FROM shop WHERE owner=? AND id=?').bind(owner, s.id)); delMap('s', s.id); stats.removed++; stats.changed = true; continue; }
+      if (h !== m.hash) {
+        if (!room()) { stats.more = true; continue; }
+        ops++;
+        const p = await nApi(env, 'PATCH', `/pages/${m.npage}`, { properties: nShopProps(s) });
+        setMap('s', s.id, m.npage, h, p.last_edited_time || ''); stats.pushed++;
+      } else if (page.last_edited_time !== m.ntime) {
+        const name = nPlain(Object.values(page.properties || {}).find((x) => x.type === 'title')?.title).trim().slice(0, 120);
+        const done = !!page.properties?.Bought?.checkbox;
+        if (name) {
+          const n = { ...s, name, done };
+          stmts.push(db.prepare('UPDATE shop SET name=?,done=? WHERE owner=? AND id=?').bind(name, done ? 1 : 0, owner, s.id));
+          setMap('s', s.id, m.npage, await nShopHash(n), page.last_edited_time);
+          stats.pulled++; stats.changed = true;
+        }
+      }
+    }
+    for (const m of Object.values(mapOf.s)) if (!shopIds.has(m.id)) { if (!room()) { stats.more = true; continue; } if (sByPage.has(m.npage)) await archive(m.npage); delMap('s', m.id); stats.removed++; }
+    const sMapped = new Set(Object.values(mapOf.s).map((m) => m.npage));
+    for (const page of sPages) {
+      if (sMapped.has(page.id)) continue;
+      const appId = nPlain(page.properties?.['App ID']?.rich_text).trim();
+      const name = nPlain(Object.values(page.properties || {}).find((x) => x.type === 'title')?.title).trim().slice(0, 120);
+      if (appId && shopIds.has(appId)) { const s = shop.results.find((x) => x.id === appId); setMap('s', appId, page.id, await nShopHash({ ...s, done: !!s.done }), page.last_edited_time); continue; }
+      if (!name) continue;
+      const id = newId();
+      const done = !!page.properties?.Bought?.checkbox;
+      stmts.push(db.prepare("INSERT INTO shop(owner,id,name,done,added,rid,rname) VALUES(?,?,?,?,?,'','')").bind(owner, id, name, done ? 1 : 0, new Date().toISOString()));
+      setMap('s', id, page.id, await nShopHash({ name, done, rid: '', rname: '' }), page.last_edited_time);
+      stats.pulled++; stats.changed = true;
+    }
+  } catch (e) {
+    stats.ok = false; stats.error = String(e && e.message || e).slice(0, 40);
+  }
+  try { for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40)); } catch (e) { stats.ok = false; stats.error = 'db_' + String(e && e.message || e).slice(0, 30); }
+  await delSetting(env, owner, 'n_lock').catch(() => {});
+  if (stats.ok) await setSetting(env, owner, 'n_last', new Date().toISOString()).catch(() => {});
+  return stats;
+}
+
 async function exportAll(env, owner) {
   const q = (sql) => env.DB.prepare(sql).bind(owner).all().then((r) => r.results);
   return {
@@ -1583,7 +1815,7 @@ async function exportAll(env, owner) {
   };
 }
 
-export { readRecipePage, recipeFromJsonLd, mailDigest, restoreMail, syncGmail, trashMail, scanInbox, listInbox, scheduledRun, runReminders, sendPush, ensureVapid, encryptPush, vapidHeader, syncClassroom, checkOrders };
+export { notionSync, readRecipePage, recipeFromJsonLd, mailDigest, restoreMail, syncGmail, trashMail, scanInbox, listInbox, scheduledRun, runReminders, sendPush, ensureVapid, encryptPush, vapidHeader, syncClassroom, checkOrders };
 
 export default {
   async fetch(req, env, ctx) {
@@ -1609,7 +1841,7 @@ export default {
         case 'GET /api/config': {
           const connected = !!(await getSetting(env, owner, 'g_refresh'));
           return json({
-            ai: aiEnabled(env), gcal: gConfigured(env), gconnected: connected, tz: env.TIMEZONE || 'Asia/Jerusalem',
+            ai: aiEnabled(env), notion: !!env.NOTION_TOKEN, gcal: gConfigured(env), gconnected: connected, tz: env.TIMEZONE || 'Asia/Jerusalem',
             classroom: connected && (await classroomOk(env, owner)), mail: connected && (await mailOk(env, owner)), mailMod: connected && (await mailModOk(env, owner)),
           });
         }
@@ -1663,6 +1895,10 @@ export default {
           }
           return json(res);
         }
+        case 'POST /api/notion/sync':
+          return json(await notionSync(env, owner));
+        case 'GET /api/notion':
+          return json({ configured: !!env.NOTION_TOKEN, ready: !!(await getSetting(env, owner, 'n_rdb')), last: await getSetting(env, owner, 'n_last') });
         case 'POST /api/recipes/fetch': {
           let b;
           try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }

@@ -464,9 +464,12 @@ function doSync(){syncT=null;if(syncBusy){syncDirty=true;return}
   if(!n)return;syncBusy=true;
   fetch('/api/sync',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){if(!r.ok)throw new Error('http');snap=next;failN=0;return r.json().catch(function(){return {}})})
-    .then(function(res){applyGcal(res&&res.gcal)})
+    .then(function(res){applyGcal(res&&res.gcal);nTick(6000)})
     .catch(function(){failN++;syncDirty=true;say('Could not save. Retrying…')})
     .then(function(){syncBusy=false;if(syncDirty){syncDirty=false;clearTimeout(syncT);syncT=setTimeout(doSync,failN?Math.min(30000,2000*failN):350)}})}
+var nT=null,nLast=0;
+function nTick(ms){if(!CFG||!CFG.notion)return;clearTimeout(nT);nT=setTimeout(function(){if(syncBusy||syncT){nTick(4000);return}
+  fetch('/api/notion/sync',{method:'POST'}).then(function(r){return r.json()}).then(function(j){if(j&&j.changed)refreshState();if(j&&j.more)nTick(3000)}).catch(function(){})},ms)}
 function applyGcal(m){if(!m)return;var ch=false;
   tasks.forEach(function(t){if(!(t.id in m))return;var v=!!m[t.id];if(!!t.gcal!==v){t.gcal=v;ch=true;if(snap.tasks[t.id])snap.tasks[t.id]=JSON.stringify(t)}});
   if(ch){render();try{if(mcp)mcp.invalidate('x','list_events')}catch(e){}}}
@@ -1380,7 +1383,7 @@ if(CFG.ai){sm=aiShim;smImg=true}smTried=true;
 $('gConnect').onclick=gConnectClick;
 load();primeSnap();gMcpTried=true;if(CFG.gcal){mcp=gShim}else{gState='nomcp'}
 notifLabel();try{if('Notification' in window&&Notification.permission==='granted')enablePush()}catch(e){}render();check();setInterval(check,15000);
-if(CFG.gcal)gWatch(true);setupClassroom();if(CFG.mail){loadOrders();loadMailToday()}if(location.hash==='#orders')tab='orders';if(location.hash==='#health')tab='food';if(location.hash==='#shop')tab='shop';if(location.hash==='#quotes')tab='quotes';if(location.hash==='#inbox')tab='inbox';if(location.hash==='#recipes'){location.replace('/recipes.html');return}var hh=location.hash.slice(1);if(hh&&TABS.some(function(x){return x[0]===hh&&hh!=='recipes'}))tab=hh;
+nTick(2500);if(CFG.gcal)gWatch(true);setupClassroom();if(CFG.mail){loadOrders();loadMailToday()}if(location.hash==='#orders')tab='orders';if(location.hash==='#health')tab='food';if(location.hash==='#shop')tab='shop';if(location.hash==='#quotes')tab='quotes';if(location.hash==='#inbox')tab='inbox';if(location.hash==='#recipes'){location.replace('/recipes.html');return}var hh=location.hash.slice(1);if(hh&&TABS.some(function(x){return x[0]===hh&&hh!=='recipes'}))tab=hh;
 }
 Promise.all([fetch('/api/state').then(function(r){if(!r.ok)throw 0;return r.json()}),fetch('/api/config').then(function(r){if(!r.ok)throw 0;return r.json()})]).then(function(a){boot(a[0],a[1])}).catch(function(){document.body.innerHTML='<p style="padding:24px;font-family:sans-serif">Could not load your data. Check your connection and reload.</p>'});
 </script>
