@@ -479,7 +479,7 @@ const background = (ctx, p) => (ctx && ctx.waitUntil ? ctx.waitUntil(p) : p);
 
 /* ---------- Claude (Anthropic API) proxy ---------- */
 
-const aiEnabled = (env) => !!(env.ANTHROPIC_API_KEY || env.AI);
+const aiEnabled = (env) => !!(env.ANTHROPIC_API_KEY || env.GEMINI_API_KEY || env.AI);
 
 async function handleAi(req, env) {
   if (!aiEnabled(env)) return fail(503, 'AI is not configured', 'ai_config');
@@ -508,7 +508,13 @@ async function handleAi(req, env) {
       return fail(400, 'Bad image', 'image_rejected');
     }
   }
-  return env.ANTHROPIC_API_KEY ? aiClaude(env, merged, images) : aiWorkers(env, merged, images);
+  if (env.ANTHROPIC_API_KEY) return aiClaude(env, merged, images);
+  if (env.GEMINI_API_KEY) {
+    const g = await aiGemini(env, merged, images);
+    if (g) return g;
+    if (!env.AI) return fail(502, 'AI request failed', 'upstream_error');
+  }
+  return aiWorkers(env, merged, images);
 }
 
 async function aiClaude(env, merged, images) {
@@ -526,6 +532,31 @@ async function aiClaude(env, merged, images) {
   const j = await r.json();
   const text = (j.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('');
   return json({ text, truncated: j.stop_reason === 'max_tokens' });
+}
+
+// Free option: Google Gemini API (free tier of Google AI Studio, no card). Returns null when it fails so Workers AI can take over.
+async function aiGemini(env, merged, images) {
+  const contents = merged.map((m, i) => {
+    const parts = [{ text: m.content }];
+    if (i === merged.length - 1) for (const im of images) parts.push({ inline_data: { mime_type: im.media_type, data: im.data } });
+    return { role: m.role === 'assistant' ? 'model' : 'user', parts };
+  });
+  const models = [...new Set([env.GEMINI_MODEL, 'gemini-2.5-flash', 'gemini-2.0-flash'].filter(Boolean))];
+  for (const model of models) {
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: 'POST',
+        headers: { 'x-goog-api-key': env.GEMINI_API_KEY, 'content-type': 'application/json' },
+        body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: 4096, temperature: 0.3 } }),
+      });
+      if (r.status === 429) { console.error('gemini rate limited', model); continue; }
+      if (!r.ok) { console.error('gemini error', model, r.status); continue; }
+      const j = await r.json();
+      const text = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
+      if (text) return json({ text, truncated: j.candidates?.[0]?.finishReason === 'MAX_TOKENS' });
+    } catch (e) { console.error('gemini fetch failed', model, String(e && e.message || e).slice(0, 80)); }
+  }
+  return null;
 }
 
 // Free option: Cloudflare Workers AI (daily free allowance, no card needed).

@@ -22,7 +22,7 @@ wrangler.toml  Cloudflare config
 | Google Calendar API | free |
 
 When a free daily limit is reached, the Worker stops answering (or the AI button says "limit reached") until it resets.
-The Workers Free plan has no overage billing. Do NOT add `ANTHROPIC_API_KEY` (paid) and do NOT upgrade to Workers Paid.
+The Workers Free plan has no overage billing. Optional free AI: add a `GEMINI_API_KEY` secret (free key from Google AI Studio, no card). It is used before Workers AI and falls back to it. Do NOT add `ANTHROPIC_API_KEY` (paid) and do NOT upgrade to Workers Paid.
 The free AI is a small open model, so food estimates and plate-photo answers are rougher than Claude's. Always check the numbers.
 
 ## 1. Deploy the app and database
