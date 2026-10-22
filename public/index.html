@@ -37,6 +37,7 @@ form{display:grid;gap:10px}
 form label{display:flex;align-items:center;gap:8px}
 .fr{display:flex;gap:10px;flex-wrap:wrap}
 .top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 14px;border-radius:12px;display:flex;gap:10px;align-items:center;z-index:50;max-width:92vw;box-shadow:0 4px 18px rgba(0,0,0,.3)}.toast[hidden]{display:none}.toast .btn{padding:4px 10px}
 .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .chip{border:1px solid var(--line);background:none;border-radius:999px;padding:3px 12px;cursor:pointer;font-size:.85rem;display:flex;align-items:center;gap:6px}
 .chip i{width:8px;height:8px;border-radius:50%}
@@ -256,10 +257,12 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
   <section id="v-inbox" class="hide">
     <div class="card">
       <div class="fhead"><strong>Inbox, sorted</strong><span class="note" id="inbStat" style="margin-left:auto"></span></div>
+      <div class="fbar"><input type="search" id="inbQ" placeholder="Search mail…" style="flex:1;min-width:140px" autocomplete="off"><select id="inbDays" aria-label="Period"><option value="0">Any time</option><option value="30">30 days</option><option value="90">3 months</option><option value="365">1 year</option></select></div>
       <div class="chips" id="inbChips"></div>
       <div class="chips" id="inbTrips"></div>
       <div class="fbar"><button class="btn" id="inbScan">↻ Sort now</button><button class="btn p" id="inbAllow" hidden>Allow Gmail changes</button></div>
       <p class="note" id="inbNote"></p>
+      <p class="note" id="inbTripInfo"></p>
     </div>
     <div class="card"><h2 id="inbTitle">Important</h2><div id="inbList"></div></div>
   </section>
@@ -1102,10 +1105,10 @@ $('qAsk').onsubmit=function(e){e.preventDefault();var t=$('qIn').value.trim();if
 
 
 /* inbox */
-var inb={folder:'important',trip:null,data:null,busy:false,loops:0};
-var IF=[['important','⭐ Important'],['trips','✈️ Trips'],['college','🎓 המכללה למנהל'],['money','💳 Money'],['shopping','📦 Shopping'],['health','🩺 Health'],['people','💌 People'],['promos','🏷️ Promos'],['other','🗂 Other'],['unsorted','⏳ Waiting']];
+var inb={q:'',days:0,folder:'important',trip:null,data:null,busy:false,loops:0};
+var IF=[['important','⭐ Important'],['trips','✈️ Trips'],['college','🎓 המכללה למנהל'],['money','💳 Money'],['shopping','📦 Shopping'],['health','🩺 Health'],['people','💌 People'],['promos','🏷️ Promos'],['other','🗂 Other'],['unsorted','⏳ Waiting'],['deleted','🗑 Deleted']];
 function mailUrl(m){return 'https://mail.google.com/mail/u/0/#all/'+encodeURIComponent(m.thread||m.id)}
-function loadInbox(){var u='/api/inbox?folder='+encodeURIComponent(inb.folder)+(inb.trip!==null?'&trip='+encodeURIComponent(inb.trip):'');
+function loadInbox(){var u='/api/inbox?folder='+encodeURIComponent(inb.q?'all':inb.folder)+(inb.q?'&q='+encodeURIComponent(inb.q):'')+(inb.days?'&days='+inb.days:'')+(inb.trip!==null?'&trip='+encodeURIComponent(inb.trip):'');
   return fetch(u).then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(j){inb.data=j;if(tab==='inbox')renderInbox();else if(tab==='today')renderToday()}).catch(function(){})}
 function scanInbox(){if(inb.busy)return;inb.busy=true;renderInbox();
   fetch('/api/inbox/scan',{method:'POST'}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j}})}).then(function(x){
@@ -1113,9 +1116,12 @@ function scanInbox(){if(inb.busy)return;inb.busy=true;renderInbox();
     inb.err='';inb.last=x.j;gsyncLoop(0);return loadInbox().then(function(){if(!x.j.done&&tab==='inbox'&&inb.loops++<400)setTimeout(scanInbox,800);else if(x.j.limited){inb.err='AI daily limit reached, the rest is sorted later automatically.';renderInbox()}})
   }).catch(function(){inb.busy=false;inb.err='Could not reach Gmail right now.';renderInbox()})}
 function gsyncLoop(n){if(!CFG.mailMod||n>30)return;fetch('/api/inbox/gsync',{method:'POST'}).then(function(r){return r.ok?r.json():null}).then(function(j){if(j&&j.ok&&(j.more||j.trashed))setTimeout(function(){gsyncLoop(n+1)},500)}).catch(function(){})}
+var toastT=null;
+function toast(t,label,fn){var el=$('toast'),b=$('toastB');$('toastT').textContent=t;el.hidden=false;b.hidden=!label;if(label){b.textContent=label;b.onclick=function(){el.hidden=true;fn&&fn()}}clearTimeout(toastT);toastT=setTimeout(function(){el.hidden=true},label?7000:4500)}
+function undoMail(m){fetch('/api/inbox/restore',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:m.id})}).then(function(){inb.data=null;loadInbox()})}
 function delMail(m,r){fetch('/api/inbox/delete',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:m.id})}).then(function(x){return x.json().then(function(j){return {ok:x.ok,j:j}})}).then(function(x){
-    if(x.ok){r.style.transition='opacity .2s,height .2s';r.style.opacity='0';setTimeout(function(){inb.data=null;loadInbox()},220);say('Moved to Gmail Trash (you can restore it there for 30 days).')}
-    else{r.style.transform='';r.style.background='';say(x.j&&x.j.code==='scope_modify'?'Allow Gmail changes first (button above).':'Could not delete right now.')}}).catch(function(){r.style.transform='';say('Could not delete right now.')})}
+    if(x.ok){r.style.transition='opacity .2s';r.style.opacity='0';setTimeout(function(){inb.data=null;loadInbox()},220);toast(x.j.pending?'Removed here. It moves to Gmail Trash once you allow Gmail changes.':'Moved to Gmail Trash.','Undo',function(){undoMail(m)})}
+    else{r.style.transform='';r.style.background='';toast('Could not delete right now.')}}).catch(function(){r.style.transform='';r.style.background='';toast('Could not delete right now.')})}
 function readMail(m,r){r.style.transition='opacity .2s';r.style.opacity='0';fetch('/api/inbox/move',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:m.id,read:true})}).then(function(){setTimeout(function(){inb.data=null;loadInbox()},200)}).catch(function(){r.style.opacity='';r.style.transform='';r.style.background=''})}
 function swipeDel(r,m){var x0=0,y0=0,dx=0,on=false,lock=false;
   r.style.touchAction='pan-y';r.style.position='relative';
@@ -1131,12 +1137,14 @@ function renderInbox(){
   $('inbScan').hidden=false;$('inbScan').disabled=inb.busy;$('inbScan').textContent=inb.busy?'Sorting…':'↻ Sort now';$('inbScan').onclick=function(){inb.loops=0;scanInbox()};
   var up=$('inbAllow');up.hidden=!!CFG.mailMod;up.onclick=function(){location.href='/api/google/connect'};
   note.textContent=inb.err||(CFG.mailMod?'Folders are mirrored in Gmail as labels (Amiti/…). Swipe a mail left to delete it, right when you have read it (hides it here, Gmail unchanged). Promotions go to Gmail Trash.':'')||'Sorted automatically in the background. Gmail itself is never changed — folders live here. Tap a mail to open it in Gmail.';
+  var qi=$('inbQ');if(!qi.dataset.on){qi.dataset.on=1;var qt=null;qi.oninput=function(){clearTimeout(qt);qt=setTimeout(function(){inb.q=qi.value.trim();inb.data=null;loadInbox()},350)};$('inbDays').onchange=function(){inb.days=+$('inbDays').value;inb.data=null;loadInbox()}}
+  var ti=$('inbTripInfo'),tf=d.tripInfo;ti.textContent=tf&&inb.folder==='trips'&&!inb.q?tf.n+' mails · '+new Date(tf.from).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'2-digit'})+' – '+new Date(tf.to).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'2-digit'})+(tf.senders.length?' · '+tf.senders.join(', '):''):'';
   var ch=$('inbChips');ch.innerHTML='';
-  IF.forEach(function(f){var n=f[0]==='important'?d.important:(d.counts[f[0]]||0);if(!n&&f[0]!=='important'&&f[0]!==inb.folder)return;
+  IF.forEach(function(f){var n=f[0]==='important'?d.important:f[0]==='deleted'?(d.deleted||0):(d.counts[f[0]]||0);if(!n&&f[0]!=='important'&&f[0]!==inb.folder)return;
     var b=document.createElement('button');b.className='chip'+(inb.folder===f[0]?' on':'');b.textContent=f[1]+' '+n;b.onclick=function(){inb.folder=f[0];inb.trip=null;inb.data=null;renderInbox()};ch.appendChild(b)});
   var tr=$('inbTrips');tr.innerHTML='';
   if(inb.folder==='trips')(d.trips||[]).forEach(function(t){var b=document.createElement('button');b.className='chip'+(inb.trip===t.trip?' on':'');b.textContent=(t.trip||'Not named yet')+' '+t.n;b.onclick=function(){inb.trip=inb.trip===t.trip?null:t.trip;inb.data=null;renderInbox()};tr.appendChild(b)});
-  var f=IF.filter(function(x){return x[0]===inb.folder})[0];$('inbTitle').textContent=(f?f[1].replace(/^\S+\s/,''):'Mail')+(inb.trip?' · '+(inb.trip||'Not named yet'):'');
+  var f=IF.filter(function(x){return x[0]===inb.folder})[0];$('inbTitle').textContent=inb.q?'Search results':(f?f[1].replace(/^\S+\s/,''):'Mail')+(inb.trip?' · '+(inb.trip||'Not named yet'):'');
   var l=$('inbList');l.innerHTML='';
   if(!d.mails.length){var e=document.createElement('div');e.className='empty';e.textContent=inb.folder==='important'?'Nothing important right now.':'Nothing here yet.';l.appendChild(e)}
   d.mails.forEach(function(m){var r=document.createElement('div');r.className='frow';
@@ -1145,9 +1153,11 @@ function renderInbox(){
     var sm2=document.createElement('small');sm2.textContent=(m.sender||m.addr)+' · '+new Date(m.date).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'2-digit'});nm.appendChild(sm2);
     if(m.snippet){var sn=document.createElement('small');sn.textContent=m.snippet.slice(0,110);nm.appendChild(sn)}
     r.appendChild(nm);
+    if(inb.folder==='deleted'){var rs=document.createElement('button');rs.className='btn';rs.textContent='Restore';rs.onclick=function(){undoMail(m)};r.appendChild(rs);l.appendChild(r);return}
+    if(m.unsub&&(m.folder==='promos'||inb.folder==='promos')&&/^https?:/.test(m.unsub)){var ua=document.createElement('a');ua.className='btn';ua.href=m.unsub;ua.target='_blank';ua.rel='noopener';ua.textContent='Unsubscribe';ua.style.cssText='font-size:.8rem;padding:4px 8px;text-decoration:none;color:var(--ink)';r.appendChild(ua)}
     var sel=document.createElement('select');sel.setAttribute('aria-label','Move to folder');sel.style.maxWidth='110px';
     [['','Move…']].concat(IF.filter(function(x){return x[0]!=='important'&&x[0]!=='unsorted'}).map(function(x){return [x[0],x[1].replace(/^\S+\s/,'')]})).forEach(function(o){var op=document.createElement('option');op.value=o[0];op.textContent=o[1];sel.appendChild(op)});
-    sel.onchange=function(){if(!sel.value)return;fetch('/api/inbox/move',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:m.id,folder:sel.value,trip:sel.value==='trips'?(inb.trip||''):''})}).then(function(){inb.data=null;renderInbox()})};
+    sel.onchange=function(){if(!sel.value)return;fetch('/api/inbox/move',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:m.id,folder:sel.value,trip:sel.value==='trips'?(inb.trip||''):''})}).then(function(r){return r.json()}).then(function(j){if(j&&j.applied)toast('Learned: '+j.applied+' more mail'+(j.applied>1?'s':'')+' from this sender moved too.');inb.data=null;renderInbox()})};
     r.appendChild(sel);
     var rb=document.createElement('button');rb.className='x';rb.textContent='✓';rb.title='Read (hide here, keep in Gmail)';rb.setAttribute('aria-label','Mark read');rb.onclick=function(){readMail(m,r)};r.appendChild(rb);
     var tb=document.createElement('button');tb.className='x';tb.textContent='🗑';tb.title='Delete (moves to Gmail Trash)';tb.setAttribute('aria-label','Delete');tb.onclick=function(){delMail(m,r)};r.appendChild(tb);
@@ -1263,5 +1273,6 @@ if(CFG.gcal)gWatch(true);setupClassroom();if(CFG.mail){loadOrders();loadMailToda
 }
 Promise.all([fetch('/api/state').then(function(r){if(!r.ok)throw 0;return r.json()}),fetch('/api/config').then(function(r){if(!r.ok)throw 0;return r.json()})]).then(function(a){boot(a[0],a[1])}).catch(function(){document.body.innerHTML='<p style="padding:24px;font-family:sans-serif">Could not load your data. Check your connection and reload.</p>'});
 </script>
+<div id="toast" class="toast" hidden><span id="toastT"></span><button class="btn" id="toastB" hidden></button></div>
 </body>
 </html>
