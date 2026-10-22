@@ -510,9 +510,13 @@ async function handleAi(req, env) {
   }
   if (env.ANTHROPIC_API_KEY) return aiClaude(env, merged, images);
   if (env.GEMINI_API_KEY) {
-    const g = await aiGemini(env, merged, images);
+    const errs = [];
+    const g = await aiGemini(env, merged, images, errs);
     if (g) return g;
-    if (!env.AI) return fail(502, 'AI request failed', 'upstream_error');
+    if (!env.AI) return json({ error: 'AI request failed', code: 'upstream_error', detail: errs.join(' | ').slice(0, 300) }, 502);
+    const w = await aiWorkers(env, merged, images);
+    if (w.status === 502) { const j = await w.json().catch(() => ({})); return json({ ...j, detail: ('gemini: ' + errs.join(' | ') + ' || ' + (j.detail || '')).slice(0, 400) }, 502); }
+    return w;
   }
   return aiWorkers(env, merged, images);
 }
@@ -535,7 +539,7 @@ async function aiClaude(env, merged, images) {
 }
 
 // Free option: Google Gemini API (free tier of Google AI Studio, no card). Returns null when it fails so Workers AI can take over.
-async function aiGemini(env, merged, images) {
+async function aiGemini(env, merged, images, errs = []) {
   const contents = merged.map((m, i) => {
     const parts = [{ text: m.content }];
     if (i === merged.length - 1) for (const im of images) parts.push({ inline_data: { mime_type: im.media_type, data: im.data } });
@@ -549,12 +553,18 @@ async function aiGemini(env, merged, images) {
         headers: { 'x-goog-api-key': env.GEMINI_API_KEY, 'content-type': 'application/json' },
         body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: 4096, temperature: 0.3 } }),
       });
-      if (r.status === 429) { console.error('gemini rate limited', model); continue; }
-      if (!r.ok) { console.error('gemini error', model, r.status); continue; }
+      if (!r.ok) {
+        const eb = await r.json().catch(() => ({}));
+        errs.push(model + ' ' + r.status + ' ' + String(eb?.error?.message || eb?.error?.status || '').replace(/\s+/g, ' ').slice(0, 90));
+        console.error('gemini error', model, r.status);
+        continue;
+      }
       const j = await r.json();
       const text = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
       if (text) return json({ text, truncated: j.candidates?.[0]?.finishReason === 'MAX_TOKENS' });
-    } catch (e) { console.error('gemini fetch failed', model, String(e && e.message || e).slice(0, 80)); }
+      errs.push(model + ' empty ' + (j.promptFeedback?.blockReason || j.candidates?.[0]?.finishReason || ''));
+    } catch (e) {
+      errs.push(model + ' ' + String(e && e.message || e).slice(0, 50)); console.error('gemini fetch failed', model, String(e && e.message || e).slice(0, 80)); }
   }
   return null;
 }
