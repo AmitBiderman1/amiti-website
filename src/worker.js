@@ -157,11 +157,15 @@ const delSetting = (env, owner, key) =>
 
 async function getState(env, owner) {
   const cutoff = new Date(Date.now() - 120 * 86400000).toISOString().slice(0, 10);
-  const [t, f, m, goal] = await Promise.all([
+  const [t, f, m, goal, wk, wt, burn, wmins] = await Promise.all([
     env.DB.prepare('SELECT id,text,due,dur,snooze,fired,tag,urgent,important,done,rec,gcal_id FROM tasks WHERE owner=?').bind(owner).all(),
     env.DB.prepare('SELECT id,day,slot,name,kcal,p,c,f FROM food WHERE owner=? AND day>=?').bind(owner, cutoff).all(),
     env.DB.prepare('SELECT id,name,servings,ing FROM meals WHERE owner=?').bind(owner).all(),
     getSetting(env, owner, 'goal'),
+    env.DB.prepare('SELECT id,day,kind,mins,kcal FROM workouts WHERE owner=? AND day>=?').bind(owner, cutoff).all(),
+    env.DB.prepare('SELECT id,day,kg FROM weights WHERE owner=?').bind(owner).all(),
+    getSetting(env, owner, 'burn'),
+    getSetting(env, owner, 'wmins'),
   ]);
   return {
     tasks: t.results.map(({ gcal_id, ...r }) => ({ ...r, urgent: !!r.urgent, important: !!r.important, done: !!r.done, gcal: !!gcal_id })),
@@ -172,6 +176,10 @@ async function getState(env, owner) {
       return { id: r.id, name: r.name, servings: r.servings, ing };
     }),
     goal: Number(goal) > 0 ? Number(goal) : 2000,
+    work: wk.results,
+    weights: wt.results,
+    burn: Number(burn) > 0 ? Number(burn) : 300,
+    wmins: Number(wmins) > 0 ? Number(wmins) : 30,
   };
 }
 
@@ -245,6 +253,41 @@ async function applySync(env, owner, b) {
   }
   for (const id of list(b.meals?.del, 200)) {
     if (RE_ID.test(String(id))) stmts.push(db.prepare('DELETE FROM meals WHERE owner=? AND id=?').bind(owner, String(id)));
+  }
+
+  for (const e of list(b.work?.upsert)) {
+    if (!e || !RE_ID.test(String(e.id)) || !RE_DAY.test(String(e.day))) continue;
+    stmts.push(
+      db.prepare(
+        `INSERT INTO workouts(owner,id,day,kind,mins,kcal) VALUES(?,?,?,?,?,?)
+         ON CONFLICT(owner,id) DO UPDATE SET day=excluded.day,kind=excluded.kind,mins=excluded.mins,kcal=excluded.kcal`
+      ).bind(owner, String(e.id), e.day, str(e.kind, 80) || 'Workout', Math.round(num(e.mins, 0, 1440, 0)), Math.round(num(e.kcal, 0, 20000, 0)))
+    );
+  }
+  for (const id of list(b.work?.del)) {
+    if (RE_ID.test(String(id))) stmts.push(db.prepare('DELETE FROM workouts WHERE owner=? AND id=?').bind(owner, String(id)));
+  }
+  for (const e of list(b.weights?.upsert)) {
+    if (!e || !RE_ID.test(String(e.id)) || !RE_DAY.test(String(e.day))) continue;
+    const kg = num(e.kg, 20, 500, 0);
+    if (!kg) continue;
+    stmts.push(
+      db.prepare(
+        `INSERT INTO weights(owner,id,day,kg) VALUES(?,?,?,?)
+         ON CONFLICT(owner,id) DO UPDATE SET day=excluded.day,kg=excluded.kg`
+      ).bind(owner, String(e.id), e.day, Math.round(kg * 10) / 10)
+    );
+  }
+  for (const id of list(b.weights?.del)) {
+    if (RE_ID.test(String(id))) stmts.push(db.prepare('DELETE FROM weights WHERE owner=? AND id=?').bind(owner, String(id)));
+  }
+  for (const [k, lo, hi] of [['burn', 0, 5000], ['wmins', 0, 600]]) {
+    if (b[k] !== undefined) {
+      stmts.push(
+        db.prepare('INSERT INTO settings(owner,key,value) VALUES(?,?,?) ON CONFLICT(owner,key) DO UPDATE SET value=excluded.value')
+          .bind(owner, k, String(Math.round(num(b[k], lo, hi, k === 'burn' ? 300 : 30))))
+      );
+    }
   }
 
   if (b.goal !== undefined) {
@@ -993,10 +1036,35 @@ async function runReminders(env, owner) {
 
 const ORDER_PUSH = { shipped: 'Shipped', out_for_delivery: 'Out for delivery', ready_for_pickup: 'Ready for pickup', delivered: 'Delivered' };
 
+// End-of-day report: one push at 21:00 local time (sent once per day).
+async function dayReport(env, owner) {
+  const stamp = localStamp(env), day = stamp.slice(0, 10), hour = Number(stamp.slice(11, 13));
+  if (hour < 21) return false;
+  if ((await getSetting(env, owner, 'report_day')) === day) return false;
+  if (!(await pushCount(env, owner))) return false;
+  const one = (sql, ...a) => env.DB.prepare(sql).bind(owner, day, ...a).first();
+  const [fd, wk, wt, goal, burn, wmins] = await Promise.all([
+    one('SELECT COALESCE(SUM(kcal),0) k, COUNT(*) n FROM food WHERE owner=? AND day=?'),
+    one('SELECT COALESCE(SUM(mins),0) m, COALESCE(SUM(kcal),0) k FROM workouts WHERE owner=? AND day=?'),
+    one('SELECT kg FROM weights WHERE owner=? AND day=? ORDER BY id DESC LIMIT 1'),
+    getSetting(env, owner, 'goal'), getSetting(env, owner, 'burn'), getSetting(env, owner, 'wmins'),
+  ]);
+  const g = Number(goal) > 0 ? Number(goal) : 2000, b = Number(burn) > 0 ? Number(burn) : 300, wm = Number(wmins) > 0 ? Number(wmins) : 30;
+  const parts = [
+    fd.n ? `Ate ${fd.k} of ${g} kcal` : 'No food logged',
+    `Workout ${wk.m}/${wm} min, burned ${wk.k}/${b} kcal`,
+  ];
+  if (wt) parts.push(`Weight ${wt.kg} kg`);
+  const ok = await sendPush(env, owner, { title: '🌙 Your day', body: parts.join(' · '), url: '/#health', tag: 'report' });
+  if (ok) await setSetting(env, owner, 'report_day', day);
+  return ok;
+}
+
 // Called by the scheduled worker every 15 minutes.
 async function scheduledRun(env) {
   const owner = 'owner';
   const out = { reminders: 0, classroom: 0, orders: 0 };
+  try { out.report = await dayReport(env, owner); } catch (e) { console.error('report', e && e.message); }
   try { out.reminders = await runReminders(env, owner); } catch (e) { console.error('reminders', e && e.message); }
   try {
     const c = await syncClassroom(env, owner);
@@ -1026,6 +1094,8 @@ async function exportAll(env, owner) {
     tasks: await q('SELECT id,text,due,dur,snooze,tag,urgent,important,done,rec FROM tasks WHERE owner=?'),
     food: await q('SELECT id,day,slot,name,kcal,p,c,f FROM food WHERE owner=?'),
     meals: await q('SELECT id,name,servings,ing FROM meals WHERE owner=?'),
+    workouts: await q('SELECT id,day,kind,mins,kcal FROM workouts WHERE owner=?'),
+    weights: await q('SELECT id,day,kg FROM weights WHERE owner=?'),
     orders: await q('SELECT shop,item,order_no,status,placed,updated FROM orders WHERE owner=? AND hidden=0'),
   };
 }

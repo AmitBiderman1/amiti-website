@@ -79,3 +79,7 @@ CREATE TABLE IF NOT EXISTS push_subs (
   created  TEXT NOT NULL,
   PRIMARY KEY (owner, endpoint)
 );
+CREATE TABLE IF NOT EXISTS workouts (owner TEXT NOT NULL, id TEXT NOT NULL, day TEXT NOT NULL, kind TEXT NOT NULL DEFAULT '', mins INTEGER NOT NULL DEFAULT 0, kcal INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (owner, id));
+CREATE INDEX IF NOT EXISTS workouts_day ON workouts(owner, day);
+CREATE TABLE IF NOT EXISTS weights (owner TEXT NOT NULL, id TEXT NOT NULL, day TEXT NOT NULL, kg REAL NOT NULL, PRIMARY KEY (owner, id));
+CREATE INDEX IF NOT EXISTS weights_day ON weights(owner, day);
