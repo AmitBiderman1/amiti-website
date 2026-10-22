@@ -122,6 +122,7 @@ li.done .t span{text-decoration:line-through;color:var(--mute)}
 .legend{display:flex;gap:14px;color:var(--mute);font-size:.8rem;margin-top:8px}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .msg2{padding:8px 12px;border-radius:12px;margin:6px 0;white-space:pre-wrap;max-width:90%;overflow-wrap:anywhere}.msg2.me{background:var(--accent);color:var(--ai);margin-left:auto}.msg2.bot{background:var(--beige,var(--line))}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}.chip{border:1px solid var(--line);background:none;color:var(--ink);border-radius:999px;padding:5px 12px;cursor:pointer;font:inherit;font-size:.88rem}.chip.on{background:var(--accent);color:var(--ai);border-color:var(--accent)}
 .rrow{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid var(--line)}.rrow:first-of-type{border-top:0}.rrow b.ok{color:var(--lo)}.rrow b.over{color:var(--hi)}
 .fhead{display:flex;align-items:baseline;gap:8px;margin-bottom:8px}
 .big{font:700 2rem/1 Fraunces,Georgia,serif}
@@ -218,6 +219,7 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
     <h2 id="todayTitle" style="margin:4px 2px 10px"></h2>
     <div class="tiles" id="tiles"></div>
     <div class="card"><h2>Tasks</h2><ul id="todayList"></ul></div>
+    <div class="card hide" id="tMail"><h2>Important mail</h2><div id="tMailList"></div></div>
     <div class="card hide" id="tOrders"><h2>Packages on the way</h2><div id="tOrdList"></div></div>
     <div class="card"><h2>Calendar</h2><div id="tCal"></div></div>
     <div class="card"><h2>Food</h2><div id="tFood"></div></div>
@@ -249,6 +251,17 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
     <div class="card"><h2 id="dayTitle">Tasks</h2><ul id="dayList"></ul></div>
     <div class="card"><h2 id="gTitle">Google Calendar</h2><div id="gList"></div><p class="note" id="gStatus">Connecting…</p><button class="btn hide" id="gConnect">Connect Google Calendar</button></div>
   </div>
+  </section>
+
+  <section id="v-inbox" class="hide">
+    <div class="card">
+      <div class="fhead"><strong>Inbox, sorted</strong><span class="note" id="inbStat" style="margin-left:auto"></span></div>
+      <div class="chips" id="inbChips"></div>
+      <div class="chips" id="inbTrips"></div>
+      <div class="fbar"><button class="btn" id="inbScan">↻ Sort now</button></div>
+      <p class="note" id="inbNote"></p>
+    </div>
+    <div class="card"><h2 id="inbTitle">Important</h2><div id="inbList"></div></div>
   </section>
 
   <section id="v-quotes" class="hide">
@@ -635,7 +648,7 @@ function loadToday(){if(!mcp||gState==='missing'||gState==='denied'||gState==='r
     tEv=gNorm(r&&r.payload&&r.payload.events)[k]||[];if(tab==='today')renderToday()
   }).catch(function(e){tEvAt=0;var c=e&&e.code;if(c==='approval_required'||c==='consent_required')gState='approve';else if(c==='needs_reauth')gState='reauth';else if(c==='server_not_connected')gState='missing';if(tab==='today')renderToday()})}
 function goTab(t){tab=t;openSn=null;render()}
-function renderToday(){var td=isoD(new Date());loadToday();
+function renderToday(){try{mailToday()}catch(e){}var td=isoD(new Date());loadToday();
   var l=tasks.filter(function(t){return !t.done&&t.due&&t.due.slice(0,10)<=td||(!t.done&&t.snooze&&t.snooze.slice(0,10)<=td)}).sort(byTime);
   var doneToday=tasks.filter(function(t){return t.done&&t.due&&t.due.slice(0,10)===td}).length;
   $('todayTitle').textContent=new Date().toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long'});
@@ -870,12 +883,12 @@ function checkOrdersNow(){if(ordBusy)return;ordBusy=true;renderOrders();
     if(!x.r.ok){say('Could not reach Gmail ('+(x.j.code||x.r.status)+').');return}
     ordData={orders:x.j.orders,mail:true};say(x.j.changed?x.j.changed+' order update(s)':'No new order emails')})
   .catch(function(){say('Could not reach Gmail.')}).then(function(){ordBusy=false;renderOrders()})}
-var TABS=[['today','Today'],['tasks','Tasks'],['orders','Orders'],['cal','Calendar'],['food','Health'],['shop','Shopping'],['quotes','Quotes']];
+var TABS=[['today','Today'],['tasks','Tasks'],['orders','Orders'],['cal','Calendar'],['food','Health'],['shop','Shopping'],['quotes','Quotes'],['inbox','Inbox']];
 
 function renderNav(){var n=$('nav');n.innerHTML='';
   TABS.forEach(function(x){var b=document.createElement('button');b.textContent=x[1];b.className=tab===x[0]?'on':'';b.onclick=function(){tab=x[0];openSn=null;render()};n.appendChild(b)});
   TABS.forEach(function(x){$('v-'+x[0]).classList.toggle('hide',tab!==x[0])})}
-function render(){renderNav();renderAlerts();if(tab==='today')renderToday();else if(tab==='tasks')renderTasks();else if(tab==='orders')renderOrders();else if(tab==='food')renderFood();else if(tab==='shop')renderShop();else if(tab==='quotes')renderQuotes();else renderCal()}
+function render(){renderNav();renderAlerts();if(tab==='today')renderToday();else if(tab==='tasks')renderTasks();else if(tab==='orders')renderOrders();else if(tab==='food')renderFood();else if(tab==='shop')renderShop();else if(tab==='quotes')renderQuotes();else if(tab==='inbox')renderInbox();else renderCal()}
 
 TAGS.forEach(function(t){var o=document.createElement('option');o.value=t.k;o.textContent=t.n;$('tag').appendChild(o)});
 $('add').onclick=function(){openForm(null)};
@@ -1087,6 +1100,51 @@ $('qAsk').onsubmit=function(e){e.preventDefault();var t=$('qIn').value.trim();if
    .then(function(r){var i=r&&+r.index;var q=list[i];if(!q||i!==Math.floor(i))throw new Error('bad');reply(q,r.why?String(r.why).slice(0,300):'')})
    .catch(function(){reply(qBest(t),'(Matched by keywords. The AI could not answer right now.)')}).then(function(){b.disabled=false;$('qMsg').textContent=''})};
 
+
+/* inbox */
+var inb={folder:'important',trip:null,data:null,busy:false,loops:0};
+var IF=[['important','⭐ Important'],['trips','✈️ Trips'],['college','🎓 המכללה למנהל'],['money','💳 Money'],['shopping','📦 Shopping'],['health','🩺 Health'],['people','💌 People'],['promos','🏷️ Promos'],['other','🗂 Other'],['unsorted','⏳ Waiting']];
+function mailUrl(m){return 'https://mail.google.com/mail/u/0/#all/'+encodeURIComponent(m.thread||m.id)}
+function loadInbox(){var u='/api/inbox?folder='+encodeURIComponent(inb.folder)+(inb.trip!==null?'&trip='+encodeURIComponent(inb.trip):'');
+  return fetch(u).then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(j){inb.data=j;if(tab==='inbox')renderInbox();else if(tab==='today')renderToday()}).catch(function(){})}
+function scanInbox(){if(inb.busy)return;inb.busy=true;renderInbox();
+  fetch('/api/inbox/scan',{method:'POST'}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j}})}).then(function(x){
+    inb.busy=false;if(!x.ok){inb.err=x.j&&x.j.code==='needs_reauth'?'Google needs you to connect again (Orders tab → Connect Gmail).':'Could not reach Gmail right now.';renderInbox();return}
+    inb.err='';inb.last=x.j;return loadInbox().then(function(){if(!x.j.done&&tab==='inbox'&&inb.loops++<400)setTimeout(scanInbox,800);else if(x.j.limited){inb.err='AI daily limit reached, the rest is sorted later automatically.';renderInbox()}})
+  }).catch(function(){inb.busy=false;inb.err='Could not reach Gmail right now.';renderInbox()})}
+function renderInbox(){
+  var d=inb.data,note=$('inbNote');
+  if(!CFG.gcal||!CFG.mail){$('inbChips').innerHTML='';$('inbTrips').innerHTML='';$('inbList').innerHTML='';$('inbScan').hidden=false;$('inbScan').textContent=CFG.gcal?'Connect Gmail':'Google is not set up';$('inbScan').onclick=function(){if(CFG.gcal)location.href='/api/google/connect'};note.textContent='Gmail is only read, never changed. Your emails are sorted inside this app.';return}
+  if(!d){loadInbox();$('inbList').innerHTML='<div class="empty">Loading…</div>';return}
+  var tot=0;Object.keys(d.counts).forEach(function(k){tot+=d.counts[k]});
+  $('inbStat').textContent=tot+' emails sorted'+(d.done?'':' · reading older mail…');
+  $('inbScan').hidden=false;$('inbScan').disabled=inb.busy;$('inbScan').textContent=inb.busy?'Sorting…':'↻ Sort now';$('inbScan').onclick=function(){inb.loops=0;scanInbox()};
+  note.textContent=inb.err||'Sorted automatically in the background. Gmail itself is never changed — folders live here. Tap a mail to open it in Gmail.';
+  var ch=$('inbChips');ch.innerHTML='';
+  IF.forEach(function(f){var n=f[0]==='important'?d.important:(d.counts[f[0]]||0);if(!n&&f[0]!=='important'&&f[0]!==inb.folder)return;
+    var b=document.createElement('button');b.className='chip'+(inb.folder===f[0]?' on':'');b.textContent=f[1]+' '+n;b.onclick=function(){inb.folder=f[0];inb.trip=null;inb.data=null;renderInbox()};ch.appendChild(b)});
+  var tr=$('inbTrips');tr.innerHTML='';
+  if(inb.folder==='trips')(d.trips||[]).forEach(function(t){var b=document.createElement('button');b.className='chip'+(inb.trip===t.trip?' on':'');b.textContent=(t.trip||'Not named yet')+' '+t.n;b.onclick=function(){inb.trip=inb.trip===t.trip?null:t.trip;inb.data=null;renderInbox()};tr.appendChild(b)});
+  var f=IF.filter(function(x){return x[0]===inb.folder})[0];$('inbTitle').textContent=(f?f[1].replace(/^\S+\s/,''):'Mail')+(inb.trip?' · '+(inb.trip||'Not named yet'):'');
+  var l=$('inbList');l.innerHTML='';
+  if(!d.mails.length){var e=document.createElement('div');e.className='empty';e.textContent=inb.folder==='important'?'Nothing important right now.':'Nothing here yet.';l.appendChild(e)}
+  d.mails.forEach(function(m){var r=document.createElement('div');r.className='frow';
+    var nm=document.createElement('div');nm.className='nm';nm.dir='auto';
+    var a=document.createElement('a');a.href=mailUrl(m);a.target='_blank';a.rel='noopener';a.textContent=m.subject||'(no subject)';a.style.cssText='color:inherit;font-weight:600;text-decoration:none';nm.appendChild(a);
+    var sm2=document.createElement('small');sm2.textContent=(m.sender||m.addr)+' · '+new Date(m.date).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'2-digit'});nm.appendChild(sm2);
+    if(m.snippet){var sn=document.createElement('small');sn.textContent=m.snippet.slice(0,110);nm.appendChild(sn)}
+    r.appendChild(nm);
+    var sel=document.createElement('select');sel.setAttribute('aria-label','Move to folder');sel.style.maxWidth='110px';
+    [['','Move…']].concat(IF.filter(function(x){return x[0]!=='important'&&x[0]!=='unsorted'}).map(function(x){return [x[0],x[1].replace(/^\S+\s/,'')]})).forEach(function(o){var op=document.createElement('option');op.value=o[0];op.textContent=o[1];sel.appendChild(op)});
+    sel.onchange=function(){if(!sel.value)return;fetch('/api/inbox/move',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:m.id,folder:sel.value,trip:sel.value==='trips'?(inb.trip||''):''})}).then(function(){inb.data=null;renderInbox()})};
+    r.appendChild(sel);
+    if(m.important){var x=document.createElement('button');x.className='x';x.textContent='✕';x.title='Not important';x.setAttribute('aria-label','Dismiss');x.onclick=function(){fetch('/api/inbox/move',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:m.id,dismiss:true})}).then(function(){inb.data=null;loadInbox()})};r.appendChild(x)}
+    l.appendChild(r)});
+  if(!inb.busy&&!d.done&&!inb.autoStarted){inb.autoStarted=true;inb.loops=0;scanInbox()}}
+function mailToday(){var d=inb.todayData,c=$('tMail');if(!d||!d.mails||!d.mails.length){c.classList.add('hide');return}c.classList.remove('hide');var l=$('tMailList');l.innerHTML='';
+  d.mails.slice(0,4).forEach(function(m){var r=document.createElement('div');r.className='frow';var nm=document.createElement('div');nm.className='nm';nm.dir='auto';var a=document.createElement('a');a.href=mailUrl(m);a.target='_blank';a.rel='noopener';a.textContent=m.subject;a.style.cssText='color:inherit;font-weight:600;text-decoration:none';nm.appendChild(a);var s2=document.createElement('small');s2.textContent=m.sender||m.addr;nm.appendChild(s2);r.appendChild(nm);l.appendChild(r)})}
+function loadMailToday(){if(!CFG.mail)return;fetch('/api/inbox?folder=important').then(function(r){return r.ok?r.json():null}).then(function(j){if(j){inb.todayData=j;mailToday()}}).catch(function(){})}
+
 /* manual add / edit */
 function openFood(en){fEdit=en||null;$('fTitle').textContent=en?'Edit food':'Add food';
   $('fName').value=en?en.name:'';$('fSlot2').value=en?en.slot:$('fslot').value;$('fK').value=en?en.kcal:'';$('fP').value=en?en.p:'';$('fC').value=en?en.c:'';$('fF').value=en?en.f:'';
@@ -1187,7 +1245,7 @@ if(CFG.ai){sm=aiShim;smImg=true}smTried=true;
 $('gConnect').onclick=gConnectClick;
 load();primeSnap();gMcpTried=true;if(CFG.gcal){mcp=gShim}else{gState='nomcp'}
 notifLabel();try{if('Notification' in window&&Notification.permission==='granted')enablePush()}catch(e){}render();check();setInterval(check,15000);
-if(CFG.gcal)gWatch(true);setupClassroom();if(CFG.mail)loadOrders();if(location.hash==='#orders')tab='orders';if(location.hash==='#health')tab='food';if(location.hash==='#shop')tab='shop';if(location.hash==='#quotes')tab='quotes';
+if(CFG.gcal)gWatch(true);setupClassroom();if(CFG.mail){loadOrders();loadMailToday()}if(location.hash==='#orders')tab='orders';if(location.hash==='#health')tab='food';if(location.hash==='#shop')tab='shop';if(location.hash==='#quotes')tab='quotes';if(location.hash==='#inbox')tab='inbox';
 }
 Promise.all([fetch('/api/state').then(function(r){if(!r.ok)throw 0;return r.json()}),fetch('/api/config').then(function(r){if(!r.ok)throw 0;return r.json()})]).then(function(a){boot(a[0],a[1])}).catch(function(){document.body.innerHTML='<p style="padding:24px;font-family:sans-serif">Could not load your data. Check your connection and reload.</p>'});
 </script>

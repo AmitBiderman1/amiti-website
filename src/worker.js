@@ -948,6 +948,146 @@ async function autoRefresh(env, owner) {
 }
 
 
+
+/* ---------- Inbox: sorts Gmail into folders inside the app (read-only, Gmail itself is never changed) ---------- */
+
+const MAIL_FOLDERS = ['trips', 'college', 'money', 'shopping', 'health', 'people', 'promos', 'other'];
+const RX = {
+  college: /colman\.ac\.il|המכללה למנהל|מכללה למנהל|\bcolman\b/i,
+  trips: /\b(flights?|boarding pass|itinerary|e-?ticket|airbnb|booking\.com|hotels?|hostel|expedia|agoda|ryanair|wizz ?air|easyjet|el al|israir|arkia|check-?in|reservation confirm|car rental)\b|טיסה|טיסות|כרטיס טיסה|מלון|חופשה|חופשת|נופש|אל על|ישראייר|ארקיע|הזמנת מלון|טיול|העברה לשדה/i,
+  shopping: /aliexpress|shein|amazon|temu|ebay|zara|asos|iherb|\bksp\b|ivory|wolt|10bis|your order|הזמנה|משלוח|חבילה/i,
+  money: /invoice|receipt|payment|billing|חשבונית|קבלה|חיוב|תשלום|ויזה|כאל|ישראכרט|\bmax\b|\bbank\b|בנק|paypal|ביטוח לאומי|מס הכנסה|ארנונה|חשמל|bill\b/i,
+  health: /clalit|maccabi|meuhedet|leumit|כללית|מכבי|מאוחדת|לאומית|קופת חולים|תור לרופא|בדיקת דם|רופא/i,
+  important: /דחוף|\burgent\b|final notice|payment (?:due|failed)|overdue|past due|חיוב נכשל|מועד אחרון|תזכורת תשלום|בחינה|מבחן|\bexam\b|deadline|boarding pass|טיסה.{0,20}(?:מחר|היום)|security alert|פג תוקף|expires? (?:today|tomorrow|soon)/i,
+};
+function ruleFolder(m) {
+  const t = `${m.sender} ${m.addr} ${m.subject} ${m.snippet}`;
+  const promo = m.labels.some((l) => /CATEGORY_(PROMOTIONS|SOCIAL|FORUMS)/.test(l));
+  if (RX.college.test(t)) return 'college';
+  if (promo) return 'promos';
+  if (RX.trips.test(t)) return 'trips';
+  if (classifyOrder(m.subject, m.snippet) || RX.shopping.test(`${m.sender} ${m.addr} ${m.subject}`)) return 'shopping';
+  if (RX.health.test(t)) return 'health';
+  if (RX.money.test(t)) return 'money';
+  return '';
+}
+
+async function aiJsonList(env, system, user) {
+  if (!env.AI) return null;
+  const models = [...new Set([env.AI_TEXT_MODEL && !RETIRED.test(env.AI_TEXT_MODEL) ? env.AI_TEXT_MODEL : null, ...TEXT_MODELS].filter(Boolean))];
+  for (const model of models) {
+    try {
+      const text = aiText(await env.AI.run(model, { max_tokens: 1200, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }));
+      const a = text.indexOf('['), z = text.lastIndexOf(']');
+      if (a >= 0 && z > a) { const j = JSON.parse(text.slice(a, z + 1)); if (Array.isArray(j)) return j; }
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (/limit|quota|neuron|429|capacity/i.test(msg) && !/not found|deprecat|no such model/i.test(msg)) return 'limit';
+    }
+  }
+  return null;
+}
+
+async function aiSortMails(env, owner, rows, tripNames) {
+  const lines = rows.map((r, i) => `${i}. From: ${r.sender || r.addr} | Subject: ${r.subject} | ${r.snippet.slice(0, 140)}`).join('\n');
+  const out = await aiJsonList(env,
+    'You sort one person\'s emails into folders. Folders: trips (flights, hotels, bookings, anything about a holiday), college (anything from or about her college, "המכללה למנהל": classes, exams, grades, tuition, registration), money (bills, banks, invoices, taxes), shopping (orders, deliveries, shops), health (clinics, appointments), people (a real person writing personally), promos (marketing, newsletters), other. For trips also give "trip": a short holiday name such as "Japan 2026" (destination + year), reusing one of the existing names when it is the same holiday: [' + tripNames.map((n) => JSON.stringify(n)).join(', ') + ']. Give "important": true ONLY if it needs her attention soon (a bill due, an exam or class change, a flight soon, a security alert, a deadline). Reply with ONLY a JSON array like [{"i":0,"folder":"money","trip":"","important":false}], one entry per email.',
+    lines);
+  if (out === 'limit' || !out) return out;
+  const upd = [];
+  for (const o of out) {
+    const r = rows[Number(o && o.i)];
+    if (!r) continue;
+    const folder = MAIL_FOLDERS.includes(o.folder) ? o.folder : 'other';
+    const trip = folder === 'trips' ? str(o.trip, 60).trim() : '';
+    upd.push(env.DB.prepare('UPDATE mails SET folder=?,trip=?,important=? WHERE owner=? AND id=? AND fixed=0').bind(folder, trip, folder === 'promos' ? 0 : (o.important === true || r.important ? 1 : 0), owner, r.id));
+  }
+  if (upd.length) await env.DB.batch(upd);
+  return upd.length;
+}
+
+const hdr = (m, n) => ((m.payload?.headers || []).find((x) => x.name.toLowerCase() === n) || {}).value || '';
+function parseFrom(f) {
+  const nm = (/^\s*"?([^"<]*?)"?\s*</.exec(f) || [])[1] || '';
+  const addr = (/<([^>]+)>/.exec(f) || /([^\s<>]+@[^\s<>]+)/.exec(f) || [])[1] || '';
+  return { sender: nm.trim().slice(0, 80), addr: addr.slice(0, 120) };
+}
+
+// One step: newest mail first, then a slice of the older backlog. Safe to call repeatedly.
+async function scanInbox(env, owner, opts = {}) {
+  if (!gConfigured(env) || !(await getSetting(env, owner, 'g_refresh'))) return { ok: false, reason: 'not_connected' };
+  if (!(await mailOk(env, owner))) return { ok: false, reason: 'scope' };
+  const base = 'https://gmail.googleapis.com/gmail/v1/users/me/messages';
+  const filt = ' -in:sent -in:drafts -in:chats';
+  const ids = [];
+  const addList = async (q, max, page) => {
+    const r = await gGet(env, owner, `${base}?maxResults=${max}&q=${encodeURIComponent(q)}${page ? '&pageToken=' + encodeURIComponent(page) : ''}`);
+    (r.messages || []).forEach((m) => ids.push(m.id));
+    return r.nextPageToken || '';
+  };
+  await addList('newer_than:3d' + filt, 12);
+  let done = (await getSetting(env, owner, 'inbox_done')) === '1';
+  if (!done) {
+    const page = (await getSetting(env, owner, 'inbox_page')) || '';
+    const next = await addList('newer_than:1y' + filt, 18, page);
+    if (next) await setSetting(env, owner, 'inbox_page', next);
+    else { await setSetting(env, owner, 'inbox_done', '1'); done = true; }
+  }
+  const uniq = [...new Set(ids)];
+  let fresh = uniq;
+  if (uniq.length) {
+    const have = new Set((await env.DB.prepare(`SELECT id FROM mails WHERE owner=? AND id IN (${uniq.map(() => '?').join(',')})`).bind(owner, ...uniq).all()).results.map((r) => r.id));
+    fresh = uniq.filter((i) => !have.has(i));
+  }
+  const ins = [];
+  const newRecent = [];
+  const cutoff = Date.now() - 2 * 86400000;
+  for (const id of fresh.slice(0, 30)) {
+    let m;
+    try { m = await gGet(env, owner, `${base}/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`); } catch (e) { if (e.message === 'needs_reauth') throw e; continue; }
+    const labels = m.labelIds || [];
+    if (labels.includes('SENT') || labels.includes('DRAFT')) continue;
+    const f = parseFrom(hdr(m, 'from'));
+    const row = { id, thread: m.threadId || id, ...f, subject: str(hdr(m, 'subject'), 200), date: Number(m.internalDate) || Date.now(), snippet: str(m.snippet, 240), labels };
+    row.folder = ruleFolder(row);
+    row.important = row.folder !== 'promos' && RX.important.test(`${row.subject} ${row.snippet}`) ? 1 : 0;
+    ins.push(env.DB.prepare('INSERT OR IGNORE INTO mails(owner,id,thread,sender,addr,subject,date,snippet,folder,trip,important,pushed,fixed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0)')
+      .bind(owner, id, row.thread, row.sender, row.addr, row.subject, row.date, row.snippet, row.folder, '', row.important, row.date < cutoff ? 1 : 0));
+  }
+  if (ins.length) await env.DB.batch(ins);
+  // let the AI sort what the rules could not (and name the holidays); retried later if it is rate limited
+  let ai = 0, limited = false;
+  if (!opts.noAi && env.AI) {
+    const pend = (await env.DB.prepare("SELECT id,sender,addr,subject,snippet,important FROM mails WHERE owner=? AND fixed=0 AND (folder='' OR (folder='trips' AND trip='')) ORDER BY date DESC LIMIT 12").bind(owner).all()).results;
+    if (pend.length) {
+      const names = (await env.DB.prepare("SELECT DISTINCT trip FROM mails WHERE owner=? AND trip<>'' LIMIT 20").bind(owner).all()).results.map((r) => r.trip);
+      const r = await aiSortMails(env, owner, pend, names);
+      if (r === 'limit') limited = true; else if (typeof r === 'number') ai = r;
+    }
+  }
+  const alerts = (await env.DB.prepare('SELECT id,sender,subject FROM mails WHERE owner=? AND important=1 AND pushed=0 AND date>=? ORDER BY date DESC LIMIT 3').bind(owner, cutoff).all()).results;
+  if (alerts.length && !opts.noPush) {
+    for (const a of alerts) await sendPush(env, owner, { title: '📧 ' + (a.sender || 'Important mail'), body: a.subject, url: '/#inbox', tag: 'mail' + a.id });
+    await env.DB.prepare(`UPDATE mails SET pushed=1 WHERE owner=? AND id IN (${alerts.map(() => '?').join(',')})`).bind(owner, ...alerts.map((a) => a.id)).run();
+  }
+  return { ok: true, added: ins.length, ai, limited, done, alerts: alerts.length };
+}
+
+async function listInbox(env, owner, folder, trip) {
+  const counts = {};
+  (await env.DB.prepare("SELECT CASE WHEN folder='' THEN 'unsorted' ELSE folder END f, COUNT(*) n FROM mails WHERE owner=? GROUP BY f").bind(owner).all()).results.forEach((r) => { counts[r.f] = r.n; });
+  const trips = (await env.DB.prepare("SELECT trip, COUNT(*) n, MAX(date) d FROM mails WHERE owner=? AND folder='trips' GROUP BY trip ORDER BY d DESC").bind(owner).all()).results;
+  const since = Date.now() - 14 * 86400000;
+  let where = 'owner=?', args = [owner];
+  if (folder === 'important') { where += ' AND important=1 AND date>=?'; args.push(since); }
+  else if (folder === 'unsorted') where += " AND folder=''";
+  else if (MAIL_FOLDERS.includes(folder)) { where += ' AND folder=?'; args.push(folder); if (folder === 'trips' && trip !== undefined && trip !== null) { where += ' AND trip=?'; args.push(String(trip)); } }
+  const mails = (await env.DB.prepare(`SELECT id,thread,sender,addr,subject,date,snippet,folder,trip,important FROM mails WHERE ${where} ORDER BY date DESC LIMIT 120`).bind(...args).all()).results;
+  const imp = (await env.DB.prepare('SELECT COUNT(*) n FROM mails WHERE owner=? AND important=1 AND date>=?').bind(owner, since).first()).n;
+  return { counts, trips, mails, important: imp, done: (await getSetting(env, owner, 'inbox_done')) === '1' };
+}
+
+
 /* ---------- Web Push (reminders to your phone even when the app is closed) ---------- */
 
 const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -1096,6 +1236,12 @@ async function dayReport(env, owner) {
 async function scheduledRun(env) {
   const owner = 'owner';
   const out = { reminders: 0, classroom: 0, orders: 0 };
+  // Every other 15-minute tick is the mail-sorting turn (free plans allow only ~50 calls per run).
+  if (Math.floor(new Date().getUTCMinutes() / 15) % 2 === 1) {
+    try { out.reminders = await runReminders(env, owner); } catch (e) { console.error('reminders', e && e.message); }
+    try { out.inbox = await scanInbox(env, owner); } catch (e) { console.error('inbox', e && e.message); }
+    return out;
+  }
   try { out.report = await dayReport(env, owner); } catch (e) { console.error('report', e && e.message); }
   try { out.reminders = await runReminders(env, owner); } catch (e) { console.error('reminders', e && e.message); }
   try {
@@ -1129,12 +1275,13 @@ async function exportAll(env, owner) {
     workouts: await q('SELECT id,day,kind,mins,kcal FROM workouts WHERE owner=?'),
     weights: await q('SELECT id,day,kg FROM weights WHERE owner=?'),
     quotes: await q('SELECT id,text,author FROM quotes WHERE owner=?'),
+    mails: await q('SELECT id,sender,addr,subject,date,folder,trip,important FROM mails WHERE owner=?'),
     shopping: await q('SELECT id,name,done FROM shop WHERE owner=?'),
     orders: await q('SELECT shop,item,order_no,status,placed,updated FROM orders WHERE owner=? AND hidden=0'),
   };
 }
 
-export { scheduledRun, runReminders, sendPush, ensureVapid, encryptPush, vapidHeader, syncClassroom, checkOrders };
+export { scanInbox, listInbox, scheduledRun, runReminders, sendPush, ensureVapid, encryptPush, vapidHeader, syncClassroom, checkOrders };
 
 export default {
   async fetch(req, env, ctx) {
@@ -1203,6 +1350,25 @@ export default {
           let b;
           try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
           if (RE_ID.test(String(b?.id))) await env.DB.prepare('UPDATE orders SET hidden=1 WHERE owner=? AND id=?').bind(owner, String(b.id)).run();
+          return json({ ok: true });
+        }
+        case 'GET /api/inbox':
+          return json({ ...(await listInbox(env, owner, url.searchParams.get('folder') || 'important', url.searchParams.has('trip') ? url.searchParams.get('trip') : null)), mail: !!(await getSetting(env, owner, 'g_refresh')) && (await mailOk(env, owner)) });
+        case 'POST /api/inbox/scan': {
+          let res;
+          try { res = await scanInbox(env, owner, { noPush: false }); } catch (e) {
+            return fail(e.message === 'needs_reauth' ? 401 : 502, 'Gmail error', e.message === 'needs_reauth' ? 'needs_reauth' : String(e.message || 'upstream_error').slice(0, 40));
+          }
+          return json(res);
+        }
+        case 'POST /api/inbox/move': {
+          let b;
+          try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
+          if (!/^[A-Za-z0-9_-]{2,40}$/.test(String(b?.id))) return fail(400, 'Bad request', 'bad_request');
+          if (b.dismiss) await env.DB.prepare('UPDATE mails SET important=0 WHERE owner=? AND id=?').bind(owner, String(b.id)).run();
+          if (MAIL_FOLDERS.includes(b.folder)) {
+            await env.DB.prepare('UPDATE mails SET folder=?,trip=?,fixed=1,important=CASE WHEN ?=\'promos\' THEN 0 ELSE important END WHERE owner=? AND id=?').bind(b.folder, b.folder === 'trips' ? str(b.trip, 60).trim() : '', b.folder, owner, String(b.id)).run();
+          }
           return json({ ok: true });
         }
         case 'GET /api/push/key':
