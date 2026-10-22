@@ -560,6 +560,7 @@ const SC = {
   crWork: GA + 'classroom.coursework.me.readonly',
   crSubs: GA + 'classroom.student-submissions.me.readonly',
   mail: GA + 'gmail.readonly',
+  mailMod: GA + 'gmail.modify',
 };
 const G_SCOPE = Object.values(SC).join(' ');
 const gConfigured = (env) => !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
@@ -730,7 +731,8 @@ const hasScope = async (env, owner, ...need) => {
   return need.every((s) => have.includes(s));
 };
 const classroomOk = (env, owner) => hasScope(env, owner, SC.crCourses, SC.crWork, SC.crSubs);
-const mailOk = (env, owner) => hasScope(env, owner, SC.mail);
+const mailOk = async (env, owner) => (await hasScope(env, owner, SC.mail)) || (await hasScope(env, owner, SC.mailMod));
+const mailModOk = (env, owner) => hasScope(env, owner, SC.mailMod);
 
 async function gGet(env, owner, url) {
   const token = await googleToken(env, owner);
@@ -1000,7 +1002,7 @@ async function aiSortMails(env, owner, rows, tripNames) {
     if (!r) continue;
     const folder = MAIL_FOLDERS.includes(o.folder) ? o.folder : 'other';
     const trip = folder === 'trips' ? str(o.trip, 60).trim() : '';
-    upd.push(env.DB.prepare('UPDATE mails SET folder=?,trip=?,important=? WHERE owner=? AND id=? AND fixed=0').bind(folder, trip, folder === 'promos' ? 0 : (o.important === true || r.important ? 1 : 0), owner, r.id));
+    upd.push(env.DB.prepare('UPDATE mails SET folder=?,trip=?,important=?,gsync=0 WHERE owner=? AND id=? AND fixed=0').bind(folder, trip, folder === 'promos' ? 0 : (o.important === true || r.important ? 1 : 0), owner, r.id));
   }
   if (upd.length) await env.DB.batch(upd);
   return upd.length;
@@ -1042,7 +1044,7 @@ async function scanInbox(env, owner, opts = {}) {
   const ins = [];
   const newRecent = [];
   const cutoff = Date.now() - 2 * 86400000;
-  for (const id of fresh.slice(0, 30)) {
+  for (const id of fresh.slice(0, opts.limit || 30)) {
     let m;
     try { m = await gGet(env, owner, `${base}/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`); } catch (e) { if (e.message === 'needs_reauth') throw e; continue; }
     const labels = m.labelIds || [];
@@ -1065,7 +1067,7 @@ async function scanInbox(env, owner, opts = {}) {
       if (r === 'limit') limited = true; else if (typeof r === 'number') ai = r;
     }
   }
-  const alerts = (await env.DB.prepare('SELECT id,sender,subject FROM mails WHERE owner=? AND important=1 AND pushed=0 AND date>=? ORDER BY date DESC LIMIT 3').bind(owner, cutoff).all()).results;
+  const alerts = (await env.DB.prepare('SELECT id,sender,subject FROM mails WHERE owner=? AND important=1 AND hidden=0 AND pushed=0 AND date>=? ORDER BY date DESC LIMIT 3').bind(owner, cutoff).all()).results;
   if (alerts.length && !opts.noPush) {
     for (const a of alerts) await sendPush(env, owner, { title: '📧 ' + (a.sender || 'Important mail'), body: a.subject, url: '/#inbox', tag: 'mail' + a.id });
     await env.DB.prepare(`UPDATE mails SET pushed=1 WHERE owner=? AND id IN (${alerts.map(() => '?').join(',')})`).bind(owner, ...alerts.map((a) => a.id)).run();
@@ -1075,16 +1077,92 @@ async function scanInbox(env, owner, opts = {}) {
 
 async function listInbox(env, owner, folder, trip) {
   const counts = {};
-  (await env.DB.prepare("SELECT CASE WHEN folder='' THEN 'unsorted' ELSE folder END f, COUNT(*) n FROM mails WHERE owner=? GROUP BY f").bind(owner).all()).results.forEach((r) => { counts[r.f] = r.n; });
-  const trips = (await env.DB.prepare("SELECT trip, COUNT(*) n, MAX(date) d FROM mails WHERE owner=? AND folder='trips' GROUP BY trip ORDER BY d DESC").bind(owner).all()).results;
+  (await env.DB.prepare("SELECT CASE WHEN folder='' THEN 'unsorted' ELSE folder END f, COUNT(*) n FROM mails WHERE owner=? AND hidden=0 GROUP BY f").bind(owner).all()).results.forEach((r) => { counts[r.f] = r.n; });
+  const trips = (await env.DB.prepare("SELECT trip, COUNT(*) n, MAX(date) d FROM mails WHERE owner=? AND folder='trips' AND hidden=0 GROUP BY trip ORDER BY d DESC").bind(owner).all()).results;
   const since = Date.now() - 14 * 86400000;
-  let where = 'owner=?', args = [owner];
+  let where = 'owner=? AND hidden=0', args = [owner];
   if (folder === 'important') { where += ' AND important=1 AND date>=?'; args.push(since); }
   else if (folder === 'unsorted') where += " AND folder=''";
   else if (MAIL_FOLDERS.includes(folder)) { where += ' AND folder=?'; args.push(folder); if (folder === 'trips' && trip !== undefined && trip !== null) { where += ' AND trip=?'; args.push(String(trip)); } }
   const mails = (await env.DB.prepare(`SELECT id,thread,sender,addr,subject,date,snippet,folder,trip,important FROM mails WHERE ${where} ORDER BY date DESC LIMIT 120`).bind(...args).all()).results;
-  const imp = (await env.DB.prepare('SELECT COUNT(*) n FROM mails WHERE owner=? AND important=1 AND date>=?').bind(owner, since).first()).n;
+  const imp = (await env.DB.prepare('SELECT COUNT(*) n FROM mails WHERE owner=? AND important=1 AND hidden=0 AND date>=?').bind(owner, since).first()).n;
   return { counts, trips, mails, important: imp, done: (await getSetting(env, owner, 'inbox_done')) === '1' };
+}
+
+/* ---------- Inbox write-back: Gmail labels, archive, trash (needs the gmail.modify permission) ---------- */
+
+async function gSend(env, owner, url, body) {
+  const token = await googleToken(env, owner);
+  if (!token) throw new Error('not_connected');
+  const r = await fetch(url, { method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 401) { await delSetting(env, owner, 'g_access'); throw new Error('needs_reauth'); }
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    const why = String(j?.error?.status || j?.error?.errors?.[0]?.reason || '').toLowerCase().replace(/[^a-z_]/g, '');
+    throw new Error('google_' + r.status + (why ? '_' + why : ''));
+  }
+  return r.status === 204 ? {} : r.json().catch(() => ({}));
+}
+
+const LABEL_NAMES = { trips: 'Trips', college: 'המכללה למנהל', money: 'Money', shopping: 'Shopping', health: 'Health', people: 'People', other: 'Other', promos: 'Promos' };
+const labelFor = (m) => 'Amiti/' + (m.folder === 'trips' ? 'Trips/' + (m.trip || 'Unnamed') : LABEL_NAMES[m.folder] || 'Other');
+
+async function gmailLabelMap(env, owner, need) {
+  let map = {};
+  try { map = JSON.parse((await getSetting(env, owner, 'gl_map')) || '{}'); } catch { map = {}; }
+  const missing = need.filter((n) => !map[n]);
+  if (!missing.length) return map;
+  const have = (await gGet(env, owner, 'https://gmail.googleapis.com/gmail/v1/users/me/labels')).labels || [];
+  for (const l of have) if (l.name && l.name.startsWith('Amiti')) map[l.name] = l.id;
+  for (const n of missing) {
+    if (map[n]) continue;
+    const c = await gSend(env, owner, 'https://gmail.googleapis.com/gmail/v1/users/me/labels', { name: n, labelListVisibility: 'labelShow', messageListVisibility: 'show' });
+    if (c.id) map[n] = c.id;
+  }
+  await setSetting(env, owner, 'gl_map', JSON.stringify(map));
+  return map;
+}
+
+// Mirrors the folders into Gmail as labels (and archives them out of the inbox), and moves Promotions to the Trash.
+async function syncGmail(env, owner, opts = {}) {
+  if (!(await mailModOk(env, owner))) return { ok: false, reason: 'scope_modify' };
+  const base = 'https://gmail.googleapis.com/gmail/v1/users/me/messages';
+  let trashed = 0, labelled = 0;
+  const promos = (await env.DB.prepare("SELECT id FROM mails WHERE owner=? AND folder='promos' AND fixed=0 LIMIT 300").bind(owner).all()).results.map((r) => r.id);
+  if (promos.length) {
+    await gSend(env, owner, base + '/batchModify', { ids: promos, addLabelIds: ['TRASH'], removeLabelIds: ['INBOX'] });
+    await env.DB.prepare(`DELETE FROM mails WHERE owner=? AND id IN (${promos.map(() => '?').join(',')})`).bind(owner, ...promos).run();
+    trashed = promos.length;
+  }
+  const rows = (await env.DB.prepare("SELECT id,folder,trip,important,glabel FROM mails WHERE owner=? AND gsync=0 AND folder<>'' ORDER BY date DESC LIMIT ?").bind(owner, opts.limit || 300).all()).results;
+  if (rows.length) {
+    const groups = new Map();
+    for (const r of rows) {
+      const name = labelFor(r), key = `${r.glabel}|${name}|${r.important ? 1 : 0}`;
+      if (!groups.has(key)) groups.set(key, { name, old: r.glabel, keep: !!r.important, ids: [] });
+      groups.get(key).ids.push(r.id);
+    }
+    const list = [...groups.values()].slice(0, 8);
+    const map = await gmailLabelMap(env, owner, [...new Set(list.flatMap((g) => [g.name]))]);
+    for (const g of list) {
+      const add = map[g.name];
+      if (!add) continue;
+      const rem = [];
+      if (!g.keep) rem.push('INBOX');
+      if (g.old && map[g.old] && g.old !== g.name) rem.push(map[g.old]);
+      await gSend(env, owner, base + '/batchModify', { ids: g.ids, addLabelIds: [add], removeLabelIds: rem });
+      await env.DB.prepare(`UPDATE mails SET glabel=?,gsync=1 WHERE owner=? AND id IN (${g.ids.map(() => '?').join(',')})`).bind(g.name, owner, ...g.ids).run();
+      labelled += g.ids.length;
+    }
+  }
+  return { ok: true, trashed, labelled, more: rows.length >= (opts.limit || 300) };
+}
+
+async function trashMail(env, owner, id) {
+  if (!(await mailModOk(env, owner))) return { ok: false, reason: 'scope_modify' };
+  await gSend(env, owner, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}/trash`);
+  await env.DB.prepare('DELETE FROM mails WHERE owner=? AND id=?').bind(owner, id).run();
+  return { ok: true };
 }
 
 
@@ -1239,7 +1317,8 @@ async function scheduledRun(env) {
   // Every other 15-minute tick is the mail-sorting turn (free plans allow only ~50 calls per run).
   if (Math.floor(new Date().getUTCMinutes() / 15) % 2 === 1) {
     try { out.reminders = await runReminders(env, owner); } catch (e) { console.error('reminders', e && e.message); }
-    try { out.inbox = await scanInbox(env, owner); } catch (e) { console.error('inbox', e && e.message); }
+    try { out.inbox = await scanInbox(env, owner, { limit: 12 }); } catch (e) { console.error('inbox', e && e.message); }
+    try { out.gmail = await syncGmail(env, owner, { limit: 200 }); } catch (e) { console.error('gmail sync', e && e.message); }
     return out;
   }
   try { out.report = await dayReport(env, owner); } catch (e) { console.error('report', e && e.message); }
@@ -1281,7 +1360,7 @@ async function exportAll(env, owner) {
   };
 }
 
-export { scanInbox, listInbox, scheduledRun, runReminders, sendPush, ensureVapid, encryptPush, vapidHeader, syncClassroom, checkOrders };
+export { syncGmail, trashMail, scanInbox, listInbox, scheduledRun, runReminders, sendPush, ensureVapid, encryptPush, vapidHeader, syncClassroom, checkOrders };
 
 export default {
   async fetch(req, env, ctx) {
@@ -1308,7 +1387,7 @@ export default {
           const connected = !!(await getSetting(env, owner, 'g_refresh'));
           return json({
             ai: aiEnabled(env), gcal: gConfigured(env), gconnected: connected, tz: env.TIMEZONE || 'Asia/Jerusalem',
-            classroom: connected && (await classroomOk(env, owner)), mail: connected && (await mailOk(env, owner)),
+            classroom: connected && (await classroomOk(env, owner)), mail: connected && (await mailOk(env, owner)), mailMod: connected && (await mailModOk(env, owner)),
           });
         }
         case 'GET /api/state': {
@@ -1361,13 +1440,28 @@ export default {
           }
           return json(res);
         }
+        case 'POST /api/inbox/gsync': {
+          try { return json(await syncGmail(env, owner)); } catch (e) {
+            return fail(e.message === 'needs_reauth' ? 401 : 502, 'Gmail error', e.message === 'needs_reauth' ? 'needs_reauth' : String(e.message || 'upstream_error').slice(0, 40));
+          }
+        }
+        case 'POST /api/inbox/delete': {
+          let b;
+          try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
+          if (!/^[A-Za-z0-9_-]{2,40}$/.test(String(b?.id))) return fail(400, 'Bad request', 'bad_request');
+          try {
+            const r = await trashMail(env, owner, String(b.id));
+            return r.ok ? json(r) : fail(403, 'Allow Gmail changes first', r.reason);
+          } catch (e) { return fail(e.message === 'needs_reauth' ? 401 : 502, 'Gmail error', e.message === 'needs_reauth' ? 'needs_reauth' : String(e.message || 'upstream_error').slice(0, 40)); }
+        }
         case 'POST /api/inbox/move': {
           let b;
           try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
           if (!/^[A-Za-z0-9_-]{2,40}$/.test(String(b?.id))) return fail(400, 'Bad request', 'bad_request');
+          if (b.read) await env.DB.prepare('UPDATE mails SET hidden=1,important=0 WHERE owner=? AND id=?').bind(owner, String(b.id)).run();
           if (b.dismiss) await env.DB.prepare('UPDATE mails SET important=0 WHERE owner=? AND id=?').bind(owner, String(b.id)).run();
           if (MAIL_FOLDERS.includes(b.folder)) {
-            await env.DB.prepare('UPDATE mails SET folder=?,trip=?,fixed=1,important=CASE WHEN ?=\'promos\' THEN 0 ELSE important END WHERE owner=? AND id=?').bind(b.folder, b.folder === 'trips' ? str(b.trip, 60).trim() : '', b.folder, owner, String(b.id)).run();
+            await env.DB.prepare('UPDATE mails SET folder=?,trip=?,fixed=1,gsync=0,important=CASE WHEN ?=\'promos\' THEN 0 ELSE important END WHERE owner=? AND id=?').bind(b.folder, b.folder === 'trips' ? str(b.trip, 60).trim() : '', b.folder, owner, String(b.id)).run();
           }
           return json({ ok: true });
         }
