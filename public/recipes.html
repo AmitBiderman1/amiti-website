@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#faf6ef">
+<meta name="theme-color" content="#1e1713">
+<script>try{document.documentElement.setAttribute("data-theme",localStorage.getItem("amiti-theme")||"dark")}catch(e){document.documentElement.setAttribute("data-theme","dark")}</script>
+<link rel="prefetch" href="/">
 <title>Amit’s Recipes</title>
 <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -11,7 +13,11 @@
 <style>
 :root{--bg:#faf6ef;--card:#fffdf9;--ink:#3a2b21;--mute:#8c7868;--line:#e8dccb;--accent:#c4573f;--ai:#fff;--sel:#fbe9e2;--beige:#f1e6d6;--gold:#c9953c;
 padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
-@media (prefers-color-scheme:dark){:root{--bg:#1e1713;--card:#2a211b;--ink:#f4eadd;--mute:#b3a08e;--line:#40342b;--accent:#e0866f;--ai:#1e1713;--sel:#3b2a24;--beige:#33291f;--gold:#d9a95a;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#1e1713;--card:#2a211b;--ink:#f4eadd;--mute:#b3a08e;--line:#40342b;--accent:#e0866f;--ai:#1e1713;--sel:#3b2a24;--beige:#33291f;--gold:#d9a95a;color-scheme:dark}
+html{background:var(--bg)}
+@view-transition{navigation:auto}
+@keyframes fadein{from{opacity:0}to{opacity:1}}
+body{animation:fadein .18s ease-out}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 "DM Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 .wrap{max-width:820px;margin:0 auto;padding:18px 16px 40px}
@@ -64,7 +70,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
 </head>
 <body>
 <div class="wrap">
-<header><a class="btn" href="/" id="back">← Back to Amiti’s</a><h1>🍳 Amit’s Recipes</h1></header>
+<header><a class="btn" href="/" id="back">← Amiti’s</a><h1>🍳 Amit’s Recipes</h1><button class="btn" id="theme" aria-label="Light or dark">🌓</button></header>
 <div id="v"></div>
 </div>
 <dialog id="dlgS"><div id="dS"></div></dialog>
@@ -79,9 +85,30 @@ var NOTION=false,GEM=false,nMsg='',nT=null,CFGOK=false;
 var snap={recipes:{},shop:{}},syncBusy=false,syncDirty=false,syncT=null,failN=0;
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
+/* shopping items: "2 eggs" + "3 eggs" become "5 eggs" (same product and unit) */
+var UN={'ק"ג':'kg','קג':'kg','קילו':'kg','kg':'kg','גרם':'g','גר':'g',"ג'":'g','g':'g','gr':'g','gram':'g','grams':'g','מ"ל':'ml','מל':'ml','ml':'ml','ליטר':'l','l':'l','liter':'l','כוס':'cup','כוסות':'cup','cup':'cup','cups':'cup','כף':'tbsp','כפות':'tbsp','tbsp':'tbsp','כפית':'tsp','כפיות':'tsp','tsp':'tsp','שקית':'bag','שקיות':'bag','חבילה':'pack','חבילות':'pack','קופסה':'can','קופסאות':'can','can':'can','cans':'can','clove':'clove','cloves':'clove','שן':'clove','שיני':'clove','יח':'unit',"יח'":'unit','יחידה':'unit','יחידות':'unit','oz':'oz','lb':'lb'};
+var FR={'½':.5,'¼':.25,'¾':.75,'⅓':1/3,'⅔':2/3};
+function parseIng(t){t=String(t||'').trim();var q=null,m;
+  if((m=/^(\d+)\/(\d+)/.exec(t))){q=m[1]/m[2];t=t.slice(m[0].length)}
+  else if((m=/^(\d+(?:[.,]\d+)?)(?:\s+(\d+)\/(\d+))?/.exec(t))){q=parseFloat(m[1].replace(',','.'));if(m[2])q+=m[2]/m[3];t=t.slice(m[0].length)}
+  else if(FR[t.charAt(0)]){q=FR[t.charAt(0)];t=t.slice(1)}
+  t=t.trim();var unit='',uw='';
+  if(q!==null){var w=/^(\S+)\s*/.exec(t);if(w){var k=w[1].replace(/[.,]+$/,'').toLowerCase();if(UN[k]){unit=UN[k];uw=w[1];t=t.slice(w[0].length)}}}
+  var name=t.replace(/^(of|של)\s+/i,'').trim();
+  var stem=name.toLowerCase().replace(/\([^)]*\)/g,'').replace(/[^\p{L}\p{N} ]/gu,'').trim().split(/\s+/).map(function(x){return x.length>3?x.replace(/(ים|ות|ה|s)$/,''):x}).join(' ');
+  return {q:q,unit:unit,uw:uw,name:name,key:unit+'|'+stem}}
+function fmtQty(n){return String(Math.round(n*100)/100)}
+function addShop(list,text,rid,rname){var p=parseIng(text);
+  var ex=list.filter(function(x){return !x.done&&parseIng(x.name).key===p.key})[0];
+  if(ex){var e=parseIng(ex.name);
+    if(p.q!==null&&e.q!==null)ex.name=(fmtQty(e.q+p.q)+' '+(e.uw?e.uw+' ':'')+e.name).slice(0,120);
+    if(rname){var ns=(ex.rname||'').split(' · ').filter(Boolean);if(ns.indexOf(rname)<0)ns.push(rname);ex.rname=ns.join(' · ').slice(0,160)}
+    return 'merged'}
+  list.push({id:uid(),name:String(text).slice(0,120),done:false,rid:rid||'',rname:rname||''});return 'added'}
+
 function api(path,body){return fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().catch(function(){return{}}).then(function(j){if(!r.ok)throw{code:j.code||(r.status===429?'rate_limited':r.status===401?'auth':'upstream_error'),message:j.error||'',detail:j.detail||''};return j})})}
 /* sync: same /api/sync as Amiti's (recipes + shopping list) */
-function save(){clearTimeout(syncT);syncT=setTimeout(doSync,300)}
+function save(){cacheSave();clearTimeout(syncT);syncT=setTimeout(doSync,300)}
 function doSync(){syncT=null;if(syncBusy){syncDirty=true;return}
   var body={recipes:{upsert:[],del:[]},shop:{upsert:[],del:[]}},next={recipes:{},shop:{}},n=0;
   function diff(k,list){var cur={};list.forEach(function(e){cur[e.id]=e});var old=snap[k];
@@ -90,8 +117,9 @@ function doSync(){syncT=null;if(syncBusy){syncDirty=true;return}
   diff('recipes',S.recipes);diff('shop',S.shop);if(!n)return;syncBusy=true;
   api('/api/sync',body).then(function(){snap=next;failN=0;nTick(4000)}).catch(function(){failN++;syncDirty=true;S.msg='Could not save, retrying…';S.err=true})
    .then(function(){syncBusy=false;if(syncDirty){syncDirty=false;clearTimeout(syncT);syncT=setTimeout(doSync,Math.min(30000,2000*(failN||1)))}})}
+function cacheSave(){try{localStorage.setItem('amiti_rc',JSON.stringify({recipes:S.recipes,shop:S.shop}))}catch(e){}}
 function load(){return fetch('/api/state').then(function(r){if(r.status===401){location.href='/login';throw 0}if(!r.ok)throw 0;return r.json()}).then(function(st){
-  S.recipes=st.recipes||[];S.shop=st.shop||[];snap={recipes:{},shop:{}};S.recipes.forEach(function(e){snap.recipes[e.id]=JSON.stringify(e)});S.shop.forEach(function(e){snap.shop[e.id]=JSON.stringify(e)});render();autoSort()})}
+  S.recipes=st.recipes||[];S.shop=st.shop||[];snap={recipes:{},shop:{}};S.recipes.forEach(function(e){snap.recipes[e.id]=JSON.stringify(e)});S.shop.forEach(function(e){snap.shop[e.id]=JSON.stringify(e)});cacheSave();render();autoSort()})}
 /* Notion (two-way, runs on the server) */
 function nTick(ms){if(!NOTION)return;clearTimeout(nT);nT=setTimeout(nRun,ms)}
 function nRun(manual){if(!NOTION)return;if(syncBusy||syncT){nTick(3000);return}
@@ -177,7 +205,7 @@ function listView(){var h='<div class="hero"><div class="big">🍳🥘🍰</div>
   Array.prototype.forEach.call($('v').querySelectorAll('[data-open]'),function(el){el.onclick=function(){var id=el.getAttribute('data-open');clearJob(el.getAttribute('data-job'));S.cur=id;S.view='one';window.scrollTo(0,0);render()}});
   Array.prototype.forEach.call($('v').querySelectorAll('.chip'),function(el){el.onclick=function(){S.cat=el.getAttribute('data-c');render()}});
   Array.prototype.forEach.call($('v').querySelectorAll('.rc[data-id]'),function(el){el.onclick=function(){S.cur=el.getAttribute('data-id');S.view='one';S.msg='';window.scrollTo(0,0);render()}})}
-function mine(r){return S.shop.filter(function(x){return x.rid===r.id})}
+function mine(r){return S.shop.filter(function(x){return x.rid===r.id||(x.rname||'').split(' · ').indexOf(r.title)>=0})}
 function oneView(){var r=S.recipes.filter(function(x){return x.id===S.cur})[0];if(!r){S.view='list';return render()}
   var open=mine(r).filter(function(x){return !x.done}).length,cat=r.cat||'Other';
   var h='<div class="top"><button class="btn" id="bk">← Back</button><div class="fr"><button class="btn p" id="shopb">🛒 Shopping list'+(open?'<span class="badge">'+open+'</span>':'')+'</button><button class="btn" id="del">Delete</button></div></div>'+
@@ -193,7 +221,7 @@ function oneView(){var r=S.recipes.filter(function(x){return x.id===S.cur})[0];i
   $('del').onclick=function(){if(!S.cd){S.cd=true;$('del').textContent='Sure? Tap again';return}S.cd=false;S.recipes=S.recipes.filter(function(x){return x.id!==r.id});save();S.view='list';render()}}
 /* the recipe's shopping list lives in a pop-up on the recipe, and is the same list as in Amiti's Shopping tab */
 function openShop(r){S.sel={};drawShop(r);try{$('dlgS').showModal()}catch(e){$('dlgS').setAttribute('open','')}}
-function drawShop(r){var list=mine(r),have={};list.forEach(function(x){have[x.name]=1});var miss=r.ing.filter(function(t){return !have[t]});
+function drawShop(r){var list=mine(r),have={};list.forEach(function(x){have[parseIng(x.name).key]=1});var miss=r.ing.filter(function(t){return !have[parseIng(t).key]});
   var h='<div class="top"><h2 style="margin:0">🛒 '+esc(r.title)+'</h2><button class="btn" id="sx">Close</button></div>';
   if(list.length){h+='<div>';list.forEach(function(s){h+='<div class="row'+(s.done?' done':'')+'"><input type="checkbox" data-id="'+esc(s.id)+'"'+(s.done?' checked':'')+'><span class="t" dir="auto"><span>'+esc(s.name)+'</span></span><a href="https://www.google.com/search?q='+encodeURIComponent('חצי חינם '+s.name)+'" target="_blank" rel="noopener" title="Search at Hatzi Hinam" style="text-decoration:none">🔍</a><button class="x" data-x="'+esc(s.id)+'" aria-label="מחיקה">×</button></div>'});h+='</div>';
     if(list.some(function(x){return x.done}))h+='<div style="margin-top:8px"><button class="btn" id="sc">Clear bought items</button></div>'}
@@ -206,10 +234,13 @@ function drawShop(r){var list=mine(r),have={};list.forEach(function(x){have[x.na
   Array.prototype.forEach.call($('dS').querySelectorAll('[data-x]'),function(b){b.onclick=function(){S.shop=S.shop.filter(function(x){return x.id!==b.getAttribute('data-x')});save();drawShop(r)}});
   Array.prototype.forEach.call($('dS').querySelectorAll('input[data-i]'),function(c){c.onchange=function(){S.sel[c.getAttribute('data-i')]=c.checked}});
   var b=$('sc');if(b)b.onclick=function(){S.shop=S.shop.filter(function(x){return !(x.rid===r.id&&x.done)});save();drawShop(r)};
-  b=$('sa');if(b)b.onclick=function(){miss.forEach(function(t,i){if(S.sel[i]===false)return;S.shop.push({id:uid(),name:t.slice(0,120),done:false,rid:r.id,rname:r.title.slice(0,160)})});S.sel={};save();drawShop(r)}}
+  b=$('sa');if(b)b.onclick=function(){miss.forEach(function(t,i){if(S.sel[i]===false)return;addShop(S.shop,t,r.id,r.title.slice(0,160))});S.sel={};save();drawShop(r)}}
 $('dlgS').addEventListener('close',function(){render()});
 document.addEventListener('visibilitychange',function(){if(!document.hidden&&!syncBusy&&!syncT&&!$('dlgS').open)load().catch(function(){})});
 fetch('/api/config').then(function(r){return r.json()}).then(function(c){CFGOK=true;GEM=!!c.gemini;NOTION=!!c.notion;if(!NOTION)nMsg='Notion: token not found (NOTION_TOKEN secret missing)';if(NOTION){nMsg='Notion connected';render();nTick(1500)}}).catch(function(){});
+try{var cc=JSON.parse(localStorage.getItem('amiti_rc')||'null');if(cc&&cc.recipes){S.recipes=cc.recipes;S.shop=cc.shop||[];render()}}catch(e){}
+$('theme').onclick=function(){var d=document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',d);try{localStorage.setItem('amiti-theme',d)}catch(e){}var m=document.querySelector('meta[name=theme-color]');if(m)m.content=d==='dark'?'#1e1713':'#faf6ef'};
+$('back').onclick=function(e){try{if(history.length>1&&document.referrer&&new URL(document.referrer).origin===location.origin&&!/recipes/.test(document.referrer)){e.preventDefault();history.back()}}catch(x){}};
 pollJobs();
 load().then(function(){try{var q=new URLSearchParams(location.search).get('add');if(q){history.replaceState(null,'',location.pathname);S.add=true;S.view='list';S.prefill=q;render()}}catch(e){}}).catch(function(){$('v').innerHTML='<div class="empty">Could not load. Check your connection and reload.</div>'});
 })();
