@@ -157,7 +157,7 @@ const delSetting = (env, owner, key) =>
 
 async function getState(env, owner) {
   const cutoff = new Date(Date.now() - 120 * 86400000).toISOString().slice(0, 10);
-  const [t, f, m, goal, wk, wt, burn, wmins, sh, qt] = await Promise.all([
+  const [t, f, m, goal, wk, wt, burn, wmins, sh, qt, rc] = await Promise.all([
     env.DB.prepare('SELECT id,text,due,dur,snooze,fired,tag,urgent,important,done,rec,gcal_id FROM tasks WHERE owner=?').bind(owner).all(),
     env.DB.prepare('SELECT id,day,slot,name,kcal,p,c,f FROM food WHERE owner=? AND day>=?').bind(owner, cutoff).all(),
     env.DB.prepare('SELECT id,name,servings,ing FROM meals WHERE owner=?').bind(owner).all(),
@@ -168,6 +168,7 @@ async function getState(env, owner) {
     getSetting(env, owner, 'wmins'),
     env.DB.prepare('SELECT id,name,done FROM shop WHERE owner=?').bind(owner).all(),
     env.DB.prepare('SELECT id,text,author FROM quotes WHERE owner=? ORDER BY added').bind(owner).all(),
+    env.DB.prepare('SELECT id,title,source,servings,ing,steps,notes,img FROM recipes WHERE owner=? ORDER BY added').bind(owner).all(),
   ]);
   return {
     tasks: t.results.map(({ gcal_id, ...r }) => ({ ...r, urgent: !!r.urgent, important: !!r.important, done: !!r.done, gcal: !!gcal_id })),
@@ -182,6 +183,10 @@ async function getState(env, owner) {
     weights: wt.results,
     shop: sh.results.map((r) => ({ id: r.id, name: r.name, done: !!r.done })),
     quotes: qt.results,
+    recipes: rc.results.map((r) => {
+      const j = (t) => { try { const a = JSON.parse(t); return Array.isArray(a) ? a : []; } catch { return []; } };
+      return { ...r, ing: j(r.ing), steps: j(r.steps) };
+    }),
     burn: Number(burn) > 0 ? Number(burn) : 300,
     wmins: Number(wmins) > 0 ? Number(wmins) : 30,
   };
@@ -272,6 +277,21 @@ async function applySync(env, owner, b) {
   }
   for (const id of list(b.shop?.del)) {
     if (RE_ID.test(String(id))) stmts.push(db.prepare('DELETE FROM shop WHERE owner=? AND id=?').bind(owner, String(id)));
+  }
+  for (const e of list(b.recipes?.upsert, 100)) {
+    if (!e || !RE_ID.test(String(e.id))) continue;
+    const title = str(e.title, 160).trim();
+    if (!title) continue;
+    const arr = (x, n, len) => (Array.isArray(x) ? x : []).slice(0, n).map((t) => str(t, len).trim()).filter(Boolean);
+    stmts.push(
+      db.prepare(
+        `INSERT INTO recipes(owner,id,title,source,servings,ing,steps,notes,img,added) VALUES(?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(owner,id) DO UPDATE SET title=excluded.title,source=excluded.source,servings=excluded.servings,ing=excluded.ing,steps=excluded.steps,notes=excluded.notes,img=excluded.img`
+      ).bind(owner, String(e.id), title, str(e.source, 500), str(e.servings, 40), JSON.stringify(arr(e.ing, 100, 200)), JSON.stringify(arr(e.steps, 80, 1200)), str(e.notes, 1500), /^https:\/\//.test(String(e.img)) ? str(e.img, 600) : '', now)
+    );
+  }
+  for (const id of list(b.recipes?.del, 100)) {
+    if (RE_ID.test(String(id))) stmts.push(db.prepare('DELETE FROM recipes WHERE owner=? AND id=?').bind(owner, String(id)));
   }
   for (const e of list(b.quotes?.upsert)) {
     if (!e || !RE_ID.test(String(e.id))) continue;
@@ -1252,6 +1272,79 @@ async function restoreMail(env, owner, id) {
   return { ok: true };
 }
 
+/* ---------- Recipes: read a web page / caption for the app to turn into a recipe ---------- */
+
+const htmlDecode = (t) => String(t || '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'").replace(/&#(\d+);/g, (m, n) => String.fromCharCode(Number(n)));
+function metaContent(html, key) {
+  const re = new RegExp(`<meta[^>]+(?:property|name)=["']${key}["'][^>]*>`, 'i');
+  const tag = (re.exec(html) || [])[0];
+  return tag ? htmlDecode((/content=["']([^"']*)["']/i.exec(tag) || [])[1] || '') : '';
+}
+function findRecipeNode(x) {
+  if (!x || typeof x !== 'object') return null;
+  if (Array.isArray(x)) { for (const i of x) { const r = findRecipeNode(i); if (r) return r; } return null; }
+  const t = x['@type'];
+  if (t === 'Recipe' || (Array.isArray(t) && t.includes('Recipe'))) return x;
+  return findRecipeNode(x['@graph']);
+}
+function flatSteps(x) {
+  if (!x) return [];
+  if (typeof x === 'string') return x.split(/\n+/).map((t) => htmlDecode(t.replace(/<[^>]+>/g, ' ')).trim()).filter(Boolean);
+  if (Array.isArray(x)) return x.flatMap(flatSteps);
+  if (x.itemListElement) return flatSteps(x.itemListElement);
+  return flatSteps(x.text || x.name || '');
+}
+function recipeFromJsonLd(html) {
+  for (const m of html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    let j;
+    try { j = JSON.parse(m[1].trim()); } catch { continue; }
+    const r = findRecipeNode(j);
+    if (!r) continue;
+    const img = Array.isArray(r.image) ? r.image[0] : r.image;
+    const imgUrl = typeof img === 'string' ? img : img && img.url;
+    const yld = Array.isArray(r.recipeYield) ? r.recipeYield[0] : r.recipeYield;
+    return {
+      title: htmlDecode(String(r.name || '')).slice(0, 160),
+      servings: yld ? String(yld).slice(0, 40) : '',
+      ingredients: (Array.isArray(r.recipeIngredient) ? r.recipeIngredient : []).map((t) => htmlDecode(String(t)).trim()).filter(Boolean).slice(0, 100),
+      steps: flatSteps(r.recipeInstructions).slice(0, 80),
+      img: typeof imgUrl === 'string' && imgUrl.startsWith('https://') ? imgUrl.slice(0, 600) : '',
+    };
+  }
+  return null;
+}
+async function readRecipePage(rawUrl) {
+  let u;
+  try { u = new URL(String(rawUrl).trim()); } catch { return { error: 'bad_url' }; }
+  const host = u.hostname.toLowerCase();
+  if (!/^https?:$/.test(u.protocol) || !host.includes('.') || /^[\d.]+$/.test(host) || host.includes(':') || /(^|\.)(localhost|local|internal)$/.test(host)) return { error: 'bad_url' };
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 9000);
+  try {
+    if (/(^|\.)tiktok\.com$/.test(host)) {
+      const r = await fetch('https://www.tiktok.com/oembed?url=' + encodeURIComponent(u.href), { signal: ctl.signal });
+      if (r.ok) {
+        const j = await r.json().catch(() => ({}));
+        if (j.title) return { text: String(j.title).slice(0, 4000), title: '', img: typeof j.thumbnail_url === 'string' && j.thumbnail_url.startsWith('https://') ? j.thumbnail_url : '', source: u.href, kind: 'caption' };
+      }
+    }
+    const r = await fetch(u.href, { signal: ctl.signal, redirect: 'follow', headers: { 'user-agent': 'Mozilla/5.0 (compatible; AmitisRecipeReader/1.0)', accept: 'text/html,application/xhtml+xml', 'accept-language': 'en,he;q=0.8' } });
+    if (!r.ok) return { error: 'unreadable', status: r.status };
+    const html = (await r.text()).slice(0, 600000);
+    const rec = recipeFromJsonLd(html);
+    if (rec && (rec.ingredients.length || rec.steps.length)) return { recipe: rec, source: u.href };
+    const title = metaContent(html, 'og:title') || htmlDecode((/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html) || [])[1] || '').trim();
+    const desc = metaContent(html, 'og:description') || metaContent(html, 'description');
+    const body = htmlDecode(html.replace(/<(script|style|noscript|svg|head)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+    const text = `${title}\n${desc}\n${body}`.slice(0, 7000);
+    if (text.replace(/\s/g, '').length < 40) return { error: 'unreadable' };
+    const img = metaContent(html, 'og:image');
+    return { text, title, img: img.startsWith('https://') ? img.slice(0, 600) : '', source: u.href, kind: 'page' };
+  } catch (e) {
+    return { error: 'unreadable' };
+  } finally { clearTimeout(timer); }
+}
+
 
 /* ---------- Web Push (reminders to your phone even when the app is closed) ---------- */
 
@@ -1441,6 +1534,7 @@ async function exportAll(env, owner) {
     meals: await q('SELECT id,name,servings,ing FROM meals WHERE owner=?'),
     workouts: await q('SELECT id,day,kind,mins,kcal FROM workouts WHERE owner=?'),
     weights: await q('SELECT id,day,kg FROM weights WHERE owner=?'),
+    recipes: await q('SELECT id,title,source,servings,ing,steps,notes FROM recipes WHERE owner=?'),
     quotes: await q('SELECT id,text,author FROM quotes WHERE owner=?'),
     mails: await q('SELECT id,sender,addr,subject,date,folder,trip,important FROM mails WHERE owner=? AND deleted=0'),
     mail_rules: await q('SELECT addr,folder,trip FROM mail_rules WHERE owner=?'),
@@ -1449,7 +1543,7 @@ async function exportAll(env, owner) {
   };
 }
 
-export { mailDigest, restoreMail, syncGmail, trashMail, scanInbox, listInbox, scheduledRun, runReminders, sendPush, ensureVapid, encryptPush, vapidHeader, syncClassroom, checkOrders };
+export { readRecipePage, recipeFromJsonLd, mailDigest, restoreMail, syncGmail, trashMail, scanInbox, listInbox, scheduledRun, runReminders, sendPush, ensureVapid, encryptPush, vapidHeader, syncClassroom, checkOrders };
 
 export default {
   async fetch(req, env, ctx) {
@@ -1528,6 +1622,11 @@ export default {
             return fail(e.message === 'needs_reauth' ? 401 : 502, 'Gmail error', e.message === 'needs_reauth' ? 'needs_reauth' : String(e.message || 'upstream_error').slice(0, 40));
           }
           return json(res);
+        }
+        case 'POST /api/recipes/fetch': {
+          let b;
+          try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
+          return json(await readRecipePage(b?.url));
         }
         case 'POST /api/inbox/rescan': {
           for (let i = 0; i < SCAN_PHASES.length; i++) { await delSetting(env, owner, 'sp_d' + i); await delSetting(env, owner, 'sp_p' + i); }

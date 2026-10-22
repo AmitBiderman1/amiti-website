@@ -38,6 +38,7 @@ form label{display:flex;align-items:center;gap:8px}
 .fr{display:flex;gap:10px;flex-wrap:wrap}
 .top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 14px;border-radius:12px;display:flex;gap:10px;align-items:center;z-index:50;max-width:92vw;box-shadow:0 4px 18px rgba(0,0,0,.3)}.toast[hidden]{display:none}.toast .btn{padding:4px 10px}
+.fab{position:fixed;right:calc(16px + env(safe-area-inset-right,0px));bottom:calc(18px + env(safe-area-inset-bottom,0px));width:54px;height:54px;border-radius:50%;border:0;background:var(--accent);color:var(--ai);font-size:1.9rem;line-height:1;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.28);z-index:40}
 .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .chip{border:1px solid var(--line);background:none;border-radius:999px;padding:3px 12px;cursor:pointer;font-size:.85rem;display:flex;align-items:center;gap:6px}
 .chip i{width:8px;height:8px;border-radius:50%}
@@ -220,6 +221,7 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
     <h2 id="todayTitle" style="margin:4px 2px 10px"></h2>
     <div class="tiles" id="tiles"></div>
     <div class="card"><h2>Tasks</h2><ul id="todayList"></ul></div>
+    <div class="card" id="tLine"><h2>My day</h2><div id="tNext" class="note" style="margin-bottom:6px"></div><div id="tTl"></div><div id="tHealth" class="note" style="margin-top:8px"></div></div>
     <div class="card hide" id="tMail"><h2>Important mail</h2><div id="tMailList"></div></div>
     <div class="card hide" id="tOrders"><h2>Packages on the way</h2><div id="tOrdList"></div></div>
     <div class="card"><h2>Calendar</h2><div id="tCal"></div></div>
@@ -252,6 +254,16 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
     <div class="card"><h2 id="dayTitle">Tasks</h2><ul id="dayList"></ul></div>
     <div class="card"><h2 id="gTitle">Google Calendar</h2><div id="gList"></div><p class="note" id="gStatus">Connecting…</p><button class="btn hide" id="gConnect">Connect Google Calendar</button></div>
   </div>
+  </section>
+
+  <section id="v-recipes" class="hide">
+    <div class="card">
+      <h2>Add a recipe</h2>
+      <textarea id="rcIn" placeholder="Paste a link (TikTok, Instagram, any recipe site) or the recipe text…" maxlength="8000"></textarea>
+      <div class="fbar"><button class="btn p" id="rcGo">Save recipe</button><button class="btn" id="rcPaste">📋 Paste</button><label class="btn" for="rcPhoto" style="cursor:pointer">📷 Photo</label><input type="file" id="rcPhoto" accept="image/*" hidden></div>
+      <p class="note" id="rcMsg">Share or copy a recipe link, then paste it here. The recipe is written out for you, and you can send its ingredients to your shopping list.</p>
+    </div>
+    <div class="card"><h2>My recipes</h2><div id="rcList"></div></div>
   </section>
 
   <section id="v-inbox" class="hide">
@@ -332,6 +344,25 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
     <div class="fr" style="justify-content:flex-end"><button type="button" class="btn" id="sCancel">Cancel</button><button class="btn p">Save</button></div>
   </form>
 </dialog>
+<dialog id="dlgR" style="width:min(560px,94vw)">
+  <h2 id="rTitle"></h2>
+  <p class="note" id="rMeta"></p>
+  <h3 style="margin:10px 0 4px;font-size:1rem">Ingredients</h3>
+  <div id="rIng"></div>
+  <h3 style="margin:10px 0 4px;font-size:1rem">Steps</h3>
+  <ol id="rSteps" style="margin:0;padding-inline-start:20px"></ol>
+  <p class="note" id="rNotes"></p>
+  <div class="fr" style="justify-content:flex-end;margin-top:10px"><button class="btn" id="rDel">Delete</button><a class="btn" id="rSrc" target="_blank" rel="noopener" style="text-decoration:none;color:var(--ink)">Open source</a><button class="btn" id="rClose">Close</button><button class="btn p" id="rShop">🛒 Add to shopping list</button></div>
+</dialog>
+<dialog id="dlgQ">
+  <form id="formQ">
+    <h2>Quick add</h2>
+    <textarea id="qqText" placeholder="Type a task, or paste a recipe link/text…" maxlength="8000" required></textarea>
+    <p class="note" id="qqHint"></p>
+    <div class="fr" style="justify-content:flex-end"><button type="button" class="btn" id="qqCancel">Cancel</button><button type="button" class="btn" id="qqRecipe">Save as recipe</button><button class="btn p">Add as task</button></div>
+  </form>
+</dialog>
+<button id="fab" class="fab" aria-label="Quick add" title="Quick add">＋</button>
 <dialog id="dlgK">
   <form id="formK">
     <h2>Log workout</h2>
@@ -416,17 +447,17 @@ var now0=new Date(),view=new Date(now0.getFullYear(),now0.getMonth(),1);
 var $=function(i){return document.getElementById(i)};
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
 /* ---- sync with the server ---- */
-var snap={tasks:{},food:{},meals:{},work:{},weights:{},shop:{},quotes:{},goal:null,burn:null,wmins:null},syncT=null,syncBusy=false,syncDirty=false,failN=0;
+var snap={tasks:{},food:{},meals:{},work:{},weights:{},shop:{},quotes:{},recipes:{},goal:null,burn:null,wmins:null},syncT=null,syncBusy=false,syncDirty=false,failN=0;
 function foodFlat(){var o={};Object.keys(food.log).forEach(function(d){(food.log[d]||[]).forEach(function(e){o[e.id]=Object.assign({day:d},e)})});return o}
 function workFlat(){var o={};Object.keys(food.work).forEach(function(d){(food.work[d]||[]).forEach(function(e){o[e.id]=Object.assign({day:d},e)})});return o}
 function wtFlat(){var o={};Object.keys(food.wt).forEach(function(d){var e=food.wt[d];if(e)o[e.id]={id:e.id,day:d,kg:e.kg}});return o}
-function primeSnap(){snap={tasks:{},food:{},meals:{},work:{},weights:{},shop:{},quotes:{},goal:food.goal,burn:food.burn,wmins:food.wmins};food.shop.forEach(function(e){snap.shop[e.id]=JSON.stringify(e)});food.quotes.forEach(function(e){snap.quotes[e.id]=JSON.stringify(e)});var wf=workFlat();Object.keys(wf).forEach(function(k){snap.work[k]=JSON.stringify(wf[k])});var tf=wtFlat();Object.keys(tf).forEach(function(k){snap.weights[k]=JSON.stringify(tf[k])});tasks.forEach(function(t){snap.tasks[t.id]=JSON.stringify(t)});var ff=foodFlat();Object.keys(ff).forEach(function(k){snap.food[k]=JSON.stringify(ff[k])});food.meals.forEach(function(m){snap.meals[m.id]=JSON.stringify(m)})}
+function primeSnap(){snap={tasks:{},food:{},meals:{},work:{},weights:{},shop:{},quotes:{},recipes:{},goal:food.goal,burn:food.burn,wmins:food.wmins};food.shop.forEach(function(e){snap.shop[e.id]=JSON.stringify(e)});food.quotes.forEach(function(e){snap.quotes[e.id]=JSON.stringify(e)});food.recipes.forEach(function(e){snap.recipes[e.id]=JSON.stringify(e)});var wf=workFlat();Object.keys(wf).forEach(function(k){snap.work[k]=JSON.stringify(wf[k])});var tf=wtFlat();Object.keys(tf).forEach(function(k){snap.weights[k]=JSON.stringify(tf[k])});tasks.forEach(function(t){snap.tasks[t.id]=JSON.stringify(t)});var ff=foodFlat();Object.keys(ff).forEach(function(k){snap.food[k]=JSON.stringify(ff[k])});food.meals.forEach(function(m){snap.meals[m.id]=JSON.stringify(m)})}
 function sync(){clearTimeout(syncT);syncT=setTimeout(doSync,350)}
 function doSync(){syncT=null;if(syncBusy){syncDirty=true;return}
-  var body={tasks:{upsert:[],del:[]},food:{upsert:[],del:[]},meals:{upsert:[],del:[]},work:{upsert:[],del:[]},weights:{upsert:[],del:[]},shop:{upsert:[],del:[]},quotes:{upsert:[],del:[]}},next={tasks:{},food:{},meals:{},work:{},weights:{},shop:{},quotes:{},goal:food.goal,burn:food.burn,wmins:food.wmins},n=0;
+  var body={tasks:{upsert:[],del:[]},food:{upsert:[],del:[]},meals:{upsert:[],del:[]},work:{upsert:[],del:[]},weights:{upsert:[],del:[]},shop:{upsert:[],del:[]},quotes:{upsert:[],del:[]},recipes:{upsert:[],del:[]}},next={tasks:{},food:{},meals:{},work:{},weights:{},shop:{},quotes:{},recipes:{},goal:food.goal,burn:food.burn,wmins:food.wmins},n=0;
   function diff(kind,cur){var old=snap[kind];Object.keys(cur).forEach(function(id){var j=JSON.stringify(cur[id]);next[kind][id]=j;if(old[id]!==j){body[kind].upsert.push(cur[id]);n++}});Object.keys(old).forEach(function(id){if(!(id in cur)){body[kind].del.push(id);n++}})}
   var tm={};tasks.forEach(function(t){tm[t.id]=t});var mm={};food.meals.forEach(function(m){mm[m.id]=m});
-  diff('tasks',tm);diff('food',foodFlat());diff('meals',mm);diff('work',workFlat());diff('weights',wtFlat());var sh={};food.shop.forEach(function(e){sh[e.id]=e});diff('shop',sh);var qq={};food.quotes.forEach(function(e){qq[e.id]=e});diff('quotes',qq);
+  diff('tasks',tm);diff('food',foodFlat());diff('meals',mm);diff('work',workFlat());diff('weights',wtFlat());var sh={};food.shop.forEach(function(e){sh[e.id]=e});diff('shop',sh);var qq={};food.quotes.forEach(function(e){qq[e.id]=e});diff('quotes',qq);var rr={};food.recipes.forEach(function(e){rr[e.id]=e});diff('recipes',rr);
   if(food.goal!==snap.goal){body.goal=food.goal;n++}
   if(food.burn!==snap.burn){body.burn=food.burn;n++}if(food.wmins!==snap.wmins){body.wmins=food.wmins;n++}
   if(!n)return;syncBusy=true;
@@ -673,6 +704,7 @@ function renderToday(){try{mailToday()}catch(e){}var td=isoD(new Date());loadTod
   var PL={shipped:'Shipped',out_for_delivery:'Out for delivery',ready_for_pickup:'Ready for pickup'};
   po.forEach(function(o){var d=document.createElement('div');d.className='ev';var tm=document.createElement('time');tm.textContent=PL[o.status];d.appendChild(tm);
     var s=document.createElement('span');s.textContent=o.shop+(o.item?': '+o.item:'');s.style.cursor='pointer';s.onclick=function(){goTab('orders')};d.appendChild(s);ol.appendChild(d)});
+  try{renderTimeline(l,ev,td)}catch(e){console.error(e)}
   // tiles
   var tl=$('tiles');tl.innerHTML='';
   function tile(label,big,small,go){var b=document.createElement('button');b.className='tile';b.type='button';
@@ -682,6 +714,19 @@ function renderToday(){try{mailToday()}catch(e){}var td=isoD(new Date());loadTod
   tile('Tasks',String(l.length),(doneToday?doneToday+' done · ':'')+(overdue?overdue+' overdue':'open today'),'tasks');
   tile('Calendar',tEv===null?'–':String(ev.length),next?'Next '+next.time+' '+next.title:(tEv===null?'not loaded':ev.length?'nothing more today':'free day'),'cal');
   tile('Food',Math.round(ft.kcal)+'',left>=0?Math.round(left)+' kcal left':Math.round(-left)+' kcal over','food')}
+function renderTimeline(l,ev,td){var items=[],now=Date.now();
+  l.forEach(function(t){var e=eff(t);var ms=e?new Date(e).getTime():0;items.push({at:ms,time:e&&e.slice(0,10)===td?e.slice(11,16):(e?'overdue':''),title:t.text,kind:'task',t:t,late:ms&&ms<now})});
+  var tnames={};l.forEach(function(t){tnames[t.text.trim().toLowerCase()]=1});
+  (ev||[]).filter(function(e){return !tnames[String(e.title||'').trim().toLowerCase()]}).forEach(function(e){items.push({at:e.all?-1:e.at,time:e.all?'All day':e.time,title:e.title,kind:'event',end:e.at+e.span})});
+  items.sort(function(a,b){var ua=a.at>0?0:a.at===-1?-1:1,ub=b.at>0?0:b.at===-1?-1:1;return ua-ub||a.at-b.at});
+  var box=$('tTl');box.innerHTML='';
+  if(!items.length){var n=document.createElement('p');n.className='note';n.textContent='A free day. Nothing scheduled.';box.appendChild(n)}
+  var nextIt=null;items.forEach(function(it){if(!nextIt&&it.at>now)nextIt=it});
+  items.forEach(function(it){var d=document.createElement('div');d.className='ev';var tm=document.createElement('time');tm.textContent=it.time||'Anytime';d.appendChild(tm);
+    var sp=document.createElement('span');sp.dir='auto';sp.textContent=(it.kind==='event'?'📅 ':'✔ ')+it.title;if(it.late){sp.style.color='var(--hi)'}if(it.end&&it.end<now)sp.style.opacity='.5';if(it===nextIt)sp.style.fontWeight='700';d.appendChild(sp);box.appendChild(d)});
+  $('tNext').textContent=nextIt?'Next up at '+nextIt.time+': '+nextIt.title:items.length?'Nothing more with a set time today.':'';
+  var wt=wTot(td),M=food.wmins,B=food.burn,wgt=wtOn(td);
+  $('tHealth').textContent='Workout '+wt.mins+'/'+M+' min · burned '+wt.kcal+'/'+B+' kcal'+(wgt&&wgt.day===td?' · weight '+wgt.kg+' kg':' · weight not logged today');}
 var QS=[[1,1,'Urgent & Important','Do first'],[0,1,'Not urgent & Important','Schedule it'],[1,0,'Urgent & Not important','Quick or delegate'],[0,0,'Not urgent & Not important','Later or drop']];
 var tView='matrix',tFold={later:false,none:false};
 function renderByTime(){
@@ -886,12 +931,12 @@ function checkOrdersNow(){if(ordBusy)return;ordBusy=true;renderOrders();
     if(!x.r.ok){say('Could not reach Gmail ('+(x.j.code||x.r.status)+').');return}
     ordData={orders:x.j.orders,mail:true};say(x.j.changed?x.j.changed+' order update(s)':'No new order emails')})
   .catch(function(){say('Could not reach Gmail.')}).then(function(){ordBusy=false;renderOrders()})}
-var TABS=[['today','Today'],['tasks','Tasks'],['orders','Orders'],['cal','Calendar'],['food','Health'],['shop','Shopping'],['quotes','Quotes'],['inbox','Inbox']];
+var TABS=[['today','Today'],['tasks','Tasks'],['orders','Orders'],['cal','Calendar'],['food','Health'],['shop','Shopping'],['quotes','Quotes'],['inbox','Inbox'],['recipes','Recipes']];
 
 function renderNav(){var n=$('nav');n.innerHTML='';
   TABS.forEach(function(x){var b=document.createElement('button');b.textContent=x[1];b.className=tab===x[0]?'on':'';b.onclick=function(){tab=x[0];openSn=null;render()};n.appendChild(b)});
   TABS.forEach(function(x){$('v-'+x[0]).classList.toggle('hide',tab!==x[0])})}
-function render(){renderNav();renderAlerts();if(tab==='today')renderToday();else if(tab==='tasks')renderTasks();else if(tab==='orders')renderOrders();else if(tab==='food')renderFood();else if(tab==='shop')renderShop();else if(tab==='quotes')renderQuotes();else if(tab==='inbox')renderInbox();else renderCal()}
+function render(){renderNav();renderAlerts();if(tab==='today')renderToday();else if(tab==='tasks')renderTasks();else if(tab==='orders')renderOrders();else if(tab==='food')renderFood();else if(tab==='shop')renderShop();else if(tab==='quotes')renderQuotes();else if(tab==='inbox')renderInbox();else if(tab==='recipes')renderRecipes();else renderCal()}
 
 TAGS.forEach(function(t){var o=document.createElement('option');o.value=t.k;o.textContent=t.n;$('tag').appendChild(o)});
 $('add').onclick=function(){openForm(null)};
@@ -929,12 +974,12 @@ $('form2').onsubmit=function(ev){ev.preventDefault();var e=dupEv;if(!e||!mcp)ret
   mcp.callTool(GS,'create_event',body).then(function(){try{mcp.invalidate(GS,'list_events')}catch(x){}say('Event duplicated in Google Calendar.')})
    .catch(function(er){var c=er&&er.code;say(c==='approval_required'||c==='consent_required'?'Creating events needs your approval.':c==='needs_reauth'?'Reconnect Google Calendar.':'Could not duplicate the event. Check Google Calendar before trying again.')})};
 /* ===== FOOD ===== */
-var FK='amiti-food-v1',food={goal:2000,burn:300,wmins:30,log:{},meals:[],work:{},wt:{},shop:[],quotes:[]},fd=new Date(),sm=null,smImg=false,smTried=false,fTab='describe',stage=[],plate=null,plateTurns=[],fEdit=null,mEdit=null,mRows=[];
+var FK='amiti-food-v1',food={goal:2000,burn:300,wmins:30,log:{},meals:[],work:{},wt:{},shop:[],quotes:[],recipes:[]},fd=new Date(),sm=null,smImg=false,smTried=false,fTab='describe',stage=[],plate=null,plateTurns=[],fEdit=null,mEdit=null,mRows=[];
 fd=new Date(fd.getFullYear(),fd.getMonth(),fd.getDate());
 var SLOTS=[['breakfast','Breakfast'],['lunch','Lunch'],['dinner','Dinner'],['snack','Snacks']];
 var ITEMS_PROMPT='You are a nutrition assistant. Break the food into separate items. If a portion is not given, assume a typical single serving and say which in "portion". Use standard nutrition database values (USDA or similar) for the specific food named. Keep each item name in the same language the user used. Numbers only: kcal, and protein, carbs and fat in grams, for the whole portion. Reply with only a JSON array, for example [{"name":"Fried egg","portion":"1 large","kcal":90,"protein":6.3,"carbs":0.4,"fat":7}].';
 var PLATE_RULES='You are a friendly nutrition assistant. The user shares a photo of their plate and asks questions about it. Answer briefly and in the language the user writes. Portion sizes and nutrition from a photo are rough estimates; say so when you guess.';
-function fLoad(){food.goal=+INIT.goal>0?+INIT.goal:2000;food.log={};(INIT.food||[]).forEach(function(e){(food.log[e.day]=food.log[e.day]||[]).push({id:String(e.id),slot:e.slot,name:e.name,kcal:e.kcal,p:e.p,c:e.c,f:e.f})});food.burn=+INIT.burn>=0&&INIT.burn!=null?+INIT.burn:300;food.wmins=+INIT.wmins>=0&&INIT.wmins!=null?+INIT.wmins:30;food.work={};(INIT.work||[]).forEach(function(e){(food.work[e.day]=food.work[e.day]||[]).push({id:String(e.id),kind:e.kind,mins:e.mins,kcal:e.kcal})});food.shop=(INIT.shop||[]).map(function(e){return {id:String(e.id),name:e.name,done:!!e.done}});food.quotes=(INIT.quotes||[]).map(function(e){return {id:String(e.id),text:e.text,author:e.author||''}});food.wt={};(INIT.weights||[]).forEach(function(e){food.wt[e.day]={id:String(e.id),kg:e.kg}});food.meals=(INIT.meals||[]).map(function(m){return {id:String(m.id),name:m.name,servings:m.servings,ing:m.ing||[]}})}
+function fLoad(){food.goal=+INIT.goal>0?+INIT.goal:2000;food.log={};(INIT.food||[]).forEach(function(e){(food.log[e.day]=food.log[e.day]||[]).push({id:String(e.id),slot:e.slot,name:e.name,kcal:e.kcal,p:e.p,c:e.c,f:e.f})});food.burn=+INIT.burn>=0&&INIT.burn!=null?+INIT.burn:300;food.wmins=+INIT.wmins>=0&&INIT.wmins!=null?+INIT.wmins:30;food.work={};(INIT.work||[]).forEach(function(e){(food.work[e.day]=food.work[e.day]||[]).push({id:String(e.id),kind:e.kind,mins:e.mins,kcal:e.kcal})});food.shop=(INIT.shop||[]).map(function(e){return {id:String(e.id),name:e.name,done:!!e.done}});food.recipes=(INIT.recipes||[]).map(function(r){return {id:String(r.id),title:r.title,source:r.source||'',servings:r.servings||'',ing:r.ing||[],steps:r.steps||[],notes:r.notes||'',img:r.img||''}});food.quotes=(INIT.quotes||[]).map(function(e){return {id:String(e.id),text:e.text,author:e.author||''}});food.wt={};(INIT.weights||[]).forEach(function(e){food.wt[e.day]={id:String(e.id),kg:e.kg}});food.meals=(INIT.meals||[]).map(function(m){return {id:String(m.id),name:m.name,servings:m.servings,ing:m.ing||[]}})}
 function fSave(){sync()}
 function num(v){var n=parseFloat(v);return isFinite(n)&&n>=0?n:0}
 function r1(n){return Math.round(n*10)/10}
@@ -1180,6 +1225,60 @@ function mailToday(){var d=inb.todayData,c=$('tMail');if(!d||!d.mails||!d.mails.
   d.mails.slice(0,4).forEach(function(m){var r=document.createElement('div');r.className='frow';var nm=document.createElement('div');nm.className='nm';nm.dir='auto';var a=document.createElement('a');a.href=mailUrl(m);a.target='_blank';a.rel='noopener';a.textContent=m.subject;a.style.cssText='color:inherit;font-weight:600;text-decoration:none';nm.appendChild(a);var s2=document.createElement('small');s2.textContent=m.sender||m.addr;nm.appendChild(s2);r.appendChild(nm);l.appendChild(r)})}
 function loadMailToday(){if(!CFG.mail)return;fetch('/api/inbox?folder=important').then(function(r){return r.ok?r.json():null}).then(function(j){if(j){inb.todayData=j;mailToday()}}).catch(function(){})}
 
+
+/* recipes */
+var RC_PROMPT='You turn a recipe (a web page, a social-media caption or a photo) into structured data. Keep the language of the source. Reply with ONLY a JSON object: {"title": short recipe name, "servings": text like "4" or "", "ingredients": [each ingredient as one string with its amount, e.g. "2 eggs"], "steps": [short instruction strings in order], "notes": ""}. Use only what is in the source; do not invent ingredients. If there is no recipe at all, reply {"title":"","ingredients":[],"steps":[]}.';
+function rcMsg(t){$('rcMsg').textContent=t}
+function hostOf(u){try{return new URL(u).hostname.replace(/^www\./,'')}catch(e){return ''}}
+function firstUrl(t){var m=/https?:\/\/[^\s<>"']+/i.exec(t||'');return m?m[0].replace(/[).,;]+$/,''):''}
+function saveRecipe(r,src,img){var ing=(r.ingredients||r.ing||[]).map(function(x){return String(x).trim()}).filter(Boolean).slice(0,100),steps=(r.steps||[]).map(function(x){return String(x).trim()}).filter(Boolean).slice(0,80);
+  var title=String(r.title||'').trim();if(!title||(!ing.length&&!steps.length))return null;
+  var rec={id:uid(),title:title.slice(0,160),source:src||'',servings:String(r.servings||'').slice(0,40),ing:ing,steps:steps,notes:String(r.notes||'').slice(0,1500),img:/^https:\/\//.test(img||'')?img:''};
+  food.recipes.push(rec);fSave();return rec}
+function aiRecipe(text,src,img,images){
+  if(!sm)return Promise.reject({code:'not_granted'});
+  return sm.json(RC_PROMPT+(text?'\n\nSource:\n'+text.slice(0,7000):'\n\nThe attached photo shows the recipe.'),images?{images:images,modelTier:'default'}:{modelTier:'default'}).then(function(o){if(Array.isArray(o))o=o[0];var rec=o&&typeof o==='object'?saveRecipe(o,src,img):null;if(!rec)throw {code:'no_recipe'};return rec})}
+function importRecipe(input,photo){
+  var b=$('rcGo');b.disabled=true;rcMsg(photo?'Reading the photo…':'Reading the recipe…');
+  var done=function(rec){$('rcIn').value='';rcMsg('Saved: '+rec.title);renderRecipes();openRecipe(rec)};
+  var fail=function(e){var c=e&&e.code;rcMsg(c==='no_recipe'?'I could not find a recipe there. Paste the recipe text (from the caption or the page) here instead.':c==='unreadable'?'This site does not let me read it (TikTok and Instagram often block). Paste the caption or recipe text here, or add a screenshot with 📷.':(aiErr(e)||'Could not do that right now.'))};
+  var p;
+  if(photo)p=shrink(photo).then(function(r){return aiRecipe('', '', '', r.blob)});
+  else{var url=firstUrl(input),rest=input.replace(url,'').trim();
+    if(url&&rest.length<40)p=fetch('/api/recipes/fetch',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:url})}).then(function(r){return r.json()}).then(function(j){
+        if(j.recipe){var rec=saveRecipe(j.recipe,j.source||url,j.recipe.img);if(rec)return rec;throw {code:'no_recipe'}}
+        if(j.text)return aiRecipe(j.text,j.source||url,j.img);throw {code:'unreadable'}});
+    else p=aiRecipe(input,url,'')}
+  p.then(done).catch(fail).then(function(){b.disabled=false})}
+function renderRecipes(){var l=$('rcList');l.innerHTML='';
+  if(!food.recipes.length){var e=document.createElement('div');e.className='empty';e.textContent='No recipes yet.';l.appendChild(e)}
+  food.recipes.slice().reverse().forEach(function(r){var row=document.createElement('div');row.className='frow';row.style.cursor='pointer';
+    var nm=document.createElement('div');nm.className='nm';nm.dir='auto';nm.textContent=r.title;var sm2=document.createElement('small');sm2.textContent=r.ing.length+' ingredients'+(r.source?' · '+hostOf(r.source):'');nm.appendChild(sm2);
+    row.appendChild(nm);var go=document.createElement('span');go.className='kc';go.textContent='›';row.appendChild(go);row.onclick=function(){openRecipe(r)};l.appendChild(row)})}
+var rcOpen=null;
+function openRecipe(r){rcOpen=r;$('rTitle').textContent=r.title;$('rMeta').textContent=(r.servings?'Serves '+r.servings:'')+(r.source?(r.servings?' · ':'')+hostOf(r.source):'');
+  var li=$('rIng');li.innerHTML='';r.ing.forEach(function(t,i){var d=document.createElement('label');d.className='frow';d.style.cssText='gap:8px;cursor:pointer';var c=document.createElement('input');c.type='checkbox';c.checked=true;c.dataset.i=i;var sp=document.createElement('span');sp.textContent=t;sp.dir='auto';d.appendChild(c);d.appendChild(sp);li.appendChild(d)});
+  var st=$('rSteps');st.innerHTML='';r.steps.forEach(function(t){var x=document.createElement('li');x.textContent=t;x.dir='auto';x.style.margin='4px 0';st.appendChild(x)});
+  $('rNotes').textContent=r.notes||'';var a=$('rSrc');a.hidden=!r.source;if(r.source)a.href=r.source;
+  try{$('dlgR').showModal()}catch(e){$('dlgR').setAttribute('open','')}}
+function addToShopping(r,idx){var have={};food.shop.forEach(function(e){if(!e.done)have[e.name.toLowerCase()]=1});var n=0;
+  idx.forEach(function(i){var t=r.ing[i];if(!t||have[t.toLowerCase()])return;food.shop.push({id:uid(),name:t.slice(0,120),done:false});have[t.toLowerCase()]=1;n++});if(n)fSave();return n}
+$('rClose').onclick=function(){$('dlgR').close()};
+$('rShop').onclick=function(){if(!rcOpen)return;var idx=[].slice.call($('rIng').querySelectorAll('input:checked')).map(function(c){return +c.dataset.i});var n=addToShopping(rcOpen,idx);$('dlgR').close();toast(n?n+' item'+(n>1?'s':'')+' added to your shopping list.':'Nothing new to add.','Open list',function(){goTab('shop')})};
+$('rDel').onclick=function(){if(!rcOpen)return;var r=rcOpen;food.recipes=food.recipes.filter(function(x){return x!==r});fSave();$('dlgR').close();renderRecipes();toast('Recipe deleted.','Undo',function(){food.recipes.push(r);fSave();renderRecipes()})};
+$('rcGo').onclick=function(){var v=$('rcIn').value.trim();if(!v){rcMsg('Paste a link or the recipe text first.');return}importRecipe(v,null)};
+$('rcPaste').onclick=function(){try{navigator.clipboard.readText().then(function(t){if(t){$('rcIn').value=t.trim();rcMsg('Pasted. Tap Save recipe.')}else rcMsg('The clipboard is empty.')},function(){rcMsg('Could not read the clipboard. Long-press in the box and choose Paste.')})}catch(e){rcMsg('Long-press in the box and choose Paste.')}};
+$('rcPhoto').onchange=function(){var f=this.files&&this.files[0];this.value='';if(f)importRecipe('',f)};
+/* quick add from anywhere + share target */
+function openQuick(text){$('qqText').value=text||'';var u=firstUrl(text||'');$('qqHint').textContent=u?'This looks like a link. Save it as a recipe, or add it as a task.':'';try{$('dlgQ').showModal()}catch(e){$('dlgQ').setAttribute('open','')}$('qqText').focus()}
+$('fab').onclick=function(){openQuick('')};
+$('qqText').oninput=function(){$('qqHint').textContent=firstUrl($('qqText').value)?'This looks like a link. Save it as a recipe, or add it as a task.':''};
+$('qqCancel').onclick=function(){$('dlgQ').close()};
+$('formQ').onsubmit=function(e){e.preventDefault();var v=$('qqText').value.trim();if(!v)return;$('dlgQ').close();goTab('tasks');$('qaText').value=v.slice(0,200);$('qaForm').onsubmit({preventDefault:function(){}})};
+$('qqRecipe').onclick=function(){var v=$('qqText').value.trim();if(!v)return;$('dlgQ').close();goTab('recipes');$('rcIn').value=v;importRecipe(v,null)};
+(function(){try{var q=new URLSearchParams(location.search),sh=[q.get('url'),q.get('text'),q.get('title')].filter(Boolean).join(' ').trim();
+  if(sh){history.replaceState(null,'',location.pathname);setTimeout(function(){openQuick(sh)},600)}}catch(e){}})();
+
 /* manual add / edit */
 function openFood(en){fEdit=en||null;$('fTitle').textContent=en?'Edit food':'Add food';
   $('fName').value=en?en.name:'';$('fSlot2').value=en?en.slot:$('fslot').value;$('fK').value=en?en.kcal:'';$('fP').value=en?en.p:'';$('fC').value=en?en.c:'';$('fF').value=en?en.f:'';
@@ -1280,7 +1379,7 @@ if(CFG.ai){sm=aiShim;smImg=true}smTried=true;
 $('gConnect').onclick=gConnectClick;
 load();primeSnap();gMcpTried=true;if(CFG.gcal){mcp=gShim}else{gState='nomcp'}
 notifLabel();try{if('Notification' in window&&Notification.permission==='granted')enablePush()}catch(e){}render();check();setInterval(check,15000);
-if(CFG.gcal)gWatch(true);setupClassroom();if(CFG.mail){loadOrders();loadMailToday()}if(location.hash==='#orders')tab='orders';if(location.hash==='#health')tab='food';if(location.hash==='#shop')tab='shop';if(location.hash==='#quotes')tab='quotes';if(location.hash==='#inbox')tab='inbox';
+if(CFG.gcal)gWatch(true);setupClassroom();if(CFG.mail){loadOrders();loadMailToday()}if(location.hash==='#orders')tab='orders';if(location.hash==='#health')tab='food';if(location.hash==='#shop')tab='shop';if(location.hash==='#quotes')tab='quotes';if(location.hash==='#inbox')tab='inbox';if(location.hash==='#recipes')tab='recipes';
 }
 Promise.all([fetch('/api/state').then(function(r){if(!r.ok)throw 0;return r.json()}),fetch('/api/config').then(function(r){if(!r.ok)throw 0;return r.json()})]).then(function(a){boot(a[0],a[1])}).catch(function(){document.body.innerHTML='<p style="padding:24px;font-family:sans-serif">Could not load your data. Check your connection and reload.</p>'});
 </script>
