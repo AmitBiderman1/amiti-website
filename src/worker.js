@@ -552,7 +552,7 @@ async function aiWorkers(env, merged, images) {
         const msgs = merged.map((m, i) => (i === merged.length - 1
           ? { role: 'user', content: [{ type: 'text', text: m.content }, { type: 'image_url', image_url: { url } }] }
           : m));
-        input = { messages: msgs, max_tokens: 1200 };
+        input = { messages: msgs, max_tokens: 3000 };
       } else {
         input = { messages: merged, max_tokens: 1500 };
       }
