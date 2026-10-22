@@ -17,6 +17,8 @@ binding = "AI"
 
 [vars]
 TIMEZONE = "Asia/Jerusalem"
+# Notion page "Amiti's" where the recipe and shopping databases are created (the integration must be connected to it).
+NOTION_PARENT_PAGE = "401e20c9ca488168b326ce514cd9dd24"
 # Optional: only if you protect the app with Cloudflare Access instead of a password (see README).
 TEAM_DOMAIN = ""
 ACCESS_AUD = ""

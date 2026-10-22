@@ -98,7 +98,7 @@ function nRun(manual){if(!NOTION)return;if(syncBusy||syncT){nTick(3000);return}
   if(manual){nMsg='Syncing with Notion…';draw()}
   fetch('/api/notion/sync',{method:'POST'}).then(function(r){return r.json()}).then(function(j){
     if(j.busy){if(manual)nMsg='Notion sync is already running…';draw();return}
-    if(!j.ok){nMsg=j.error==='notion_no_page'?'Notion: share a page with the integration first (see below)':j.error==='notion_auth'?'Notion rejected the token':'Notion sync failed ['+(j.error||'?')+']';draw();return}
+    if(!j.ok){nMsg=(j.error==='notion_no_page'||j.error==='notion_404')?'Notion: the integration cannot open the Amiti’s page. In Notion open the page, tap ⋯, Connections, and add your integration. Then sync again.':j.error==='notion_auth'?'Notion rejected the token':'Notion sync failed ['+(j.error||'?')+']';draw();return}
     nMsg='Notion: synced ✓';if(j.changed){load()}else draw();if(j.more)nTick(3000)}).catch(function(){nMsg='Notion sync failed';draw()})}
 function draw(){var e=$('nst');if(e)e.textContent=nMsg}
 /* AI (same /api/ai as Amiti's) */
