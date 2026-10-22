@@ -166,7 +166,7 @@ async function getState(env, owner) {
     env.DB.prepare('SELECT id,day,kg FROM weights WHERE owner=?').bind(owner).all(),
     getSetting(env, owner, 'burn'),
     getSetting(env, owner, 'wmins'),
-    env.DB.prepare('SELECT id,name,done FROM shop WHERE owner=?').bind(owner).all(),
+    env.DB.prepare('SELECT id,name,done,rid,rname FROM shop WHERE owner=?').bind(owner).all(),
     env.DB.prepare('SELECT id,text,author FROM quotes WHERE owner=? ORDER BY added').bind(owner).all(),
     env.DB.prepare('SELECT id,title,source,servings,ing,steps,notes,img FROM recipes WHERE owner=? ORDER BY added').bind(owner).all(),
   ]);
@@ -181,7 +181,7 @@ async function getState(env, owner) {
     goal: Number(goal) > 0 ? Number(goal) : 2000,
     work: wk.results,
     weights: wt.results,
-    shop: sh.results.map((r) => ({ id: r.id, name: r.name, done: !!r.done })),
+    shop: sh.results.map((r) => ({ id: r.id, name: r.name, done: !!r.done, rid: r.rid || '', rname: r.rname || '' })),
     quotes: qt.results,
     recipes: rc.results.map((r) => {
       const j = (t) => { try { const a = JSON.parse(t); return Array.isArray(a) ? a : []; } catch { return []; } };
@@ -270,9 +270,9 @@ async function applySync(env, owner, b) {
     if (!name) continue;
     stmts.push(
       db.prepare(
-        `INSERT INTO shop(owner,id,name,done,added) VALUES(?,?,?,?,?)
-         ON CONFLICT(owner,id) DO UPDATE SET name=excluded.name,done=excluded.done`
-      ).bind(owner, String(e.id), name, bit(e.done), now)
+        `INSERT INTO shop(owner,id,name,done,added,rid,rname) VALUES(?,?,?,?,?,?,?)
+         ON CONFLICT(owner,id) DO UPDATE SET name=excluded.name,done=excluded.done,rid=excluded.rid,rname=excluded.rname`
+      ).bind(owner, String(e.id), name, bit(e.done), now, RE_ID.test(String(e.rid || '')) ? String(e.rid) : '', str(e.rname, 160))
     );
   }
   for (const id of list(b.shop?.del)) {
@@ -1538,7 +1538,7 @@ async function exportAll(env, owner) {
     quotes: await q('SELECT id,text,author FROM quotes WHERE owner=?'),
     mails: await q('SELECT id,sender,addr,subject,date,folder,trip,important FROM mails WHERE owner=? AND deleted=0'),
     mail_rules: await q('SELECT addr,folder,trip FROM mail_rules WHERE owner=?'),
-    shopping: await q('SELECT id,name,done FROM shop WHERE owner=?'),
+    shopping: await q('SELECT id,name,done,rid,rname FROM shop WHERE owner=?'),
     orders: await q('SELECT shop,item,order_no,status,placed,updated FROM orders WHERE owner=? AND hidden=0'),
   };
 }

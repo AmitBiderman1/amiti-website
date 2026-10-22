@@ -257,6 +257,7 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
   </section>
 
   <section id="v-recipes" class="hide">
+    <a class="btn p" href="/bakery.html" style="display:block;text-align:center;text-decoration:none;margin-bottom:10px">🧁 Open the bakery (המאפייה)</a>
     <div class="card">
       <h2>Add a recipe</h2>
       <textarea id="rcIn" placeholder="Paste a link (TikTok, Instagram, any recipe site) or the recipe text…" maxlength="8000"></textarea>
@@ -1112,11 +1113,11 @@ function renderShop(){var l=$('shopList');l.innerHTML='';
   if(!food.shop.length){var e=document.createElement('div');e.className='empty';e.textContent='Your list is empty.';l.appendChild(e)}
   food.shop.slice().sort(function(a,b){return (a.done?1:0)-(b.done?1:0)}).forEach(function(it){var r=document.createElement('div');r.className='frow';
     var c=document.createElement('input');c.type='checkbox';c.checked=it.done;c.setAttribute('aria-label','Bought');c.onchange=function(){it.done=c.checked;fSave();renderShop()};
-    var nm=document.createElement('div');nm.className='nm';nm.textContent=it.name;if(it.done)nm.style.cssText='text-decoration:line-through;opacity:.55';
+    var nm=document.createElement('div');nm.className='nm';nm.textContent=it.name;if(it.rname){var rs=document.createElement('small');rs.textContent='🧁 '+it.rname;nm.appendChild(rs)}if(it.done)nm.style.cssText='text-decoration:line-through;opacity:.55';
     var a=document.createElement('a');a.className='btn';a.textContent='🔍';a.title='Search at Hatzi Hinam';a.target='_blank';a.rel='noopener';a.href='https://www.google.com/search?q='+encodeURIComponent('חצי חינם '+it.name);
     var x=document.createElement('button');x.className='x';x.textContent='✕';x.title='Delete';x.setAttribute('aria-label','Delete');x.onclick=function(){food.shop=food.shop.filter(function(y){return y!==it});fSave();renderShop()};
     r.appendChild(c);r.appendChild(nm);r.appendChild(a);r.appendChild(x);l.appendChild(r)})}
-$('shopF').onsubmit=function(e){e.preventDefault();var v=$('shopIn').value;v.split(/[,\n،]+/).map(function(x){return x.trim()}).filter(Boolean).slice(0,40).forEach(function(n){food.shop.push({id:uid(),name:n.slice(0,120),done:false})});$('shopIn').value='';fSave();renderShop()};
+$('shopF').onsubmit=function(e){e.preventDefault();var v=$('shopIn').value;v.split(/[;\n]/.test(v)?/[;\n]+/:/[,\n،]+/).map(function(x){return x.trim()}).filter(Boolean).slice(0,40).forEach(function(n){food.shop.push({id:uid(),name:n.slice(0,120),done:false})});$('shopIn').value='';fSave();renderShop()};
 $('shopClear').onclick=function(){food.shop=food.shop.filter(function(y){return !y.done});fSave();renderShop()};
 $('shopCopy').onclick=function(){var t=food.shop.filter(function(y){return !y.done}).map(function(y){return '• '+y.name}).join('\n');
   var ok=function(){$('shopMsg').textContent='Copied.'},no=function(){$('shopMsg').textContent='Could not copy on this device.'};
@@ -1262,7 +1263,7 @@ function openRecipe(r){rcOpen=r;$('rTitle').textContent=r.title;$('rMeta').textC
   $('rNotes').textContent=r.notes||'';var a=$('rSrc');a.hidden=!r.source;if(r.source)a.href=r.source;
   try{$('dlgR').showModal()}catch(e){$('dlgR').setAttribute('open','')}}
 function addToShopping(r,idx){var have={};food.shop.forEach(function(e){if(!e.done)have[e.name.toLowerCase()]=1});var n=0;
-  idx.forEach(function(i){var t=r.ing[i];if(!t||have[t.toLowerCase()])return;food.shop.push({id:uid(),name:t.slice(0,120),done:false});have[t.toLowerCase()]=1;n++});if(n)fSave();return n}
+  idx.forEach(function(i){var t=r.ing[i];if(!t||have[t.toLowerCase()])return;food.shop.push({id:uid(),name:t.slice(0,120),done:false,rid:r.id,rname:r.title.slice(0,160)});have[t.toLowerCase()]=1;n++});if(n)fSave();return n}
 $('rClose').onclick=function(){$('dlgR').close()};
 $('rShop').onclick=function(){if(!rcOpen)return;var idx=[].slice.call($('rIng').querySelectorAll('input:checked')).map(function(c){return +c.dataset.i});var n=addToShopping(rcOpen,idx);$('dlgR').close();toast(n?n+' item'+(n>1?'s':'')+' added to your shopping list.':'Nothing new to add.','Open list',function(){goTab('shop')})};
 $('rDel').onclick=function(){if(!rcOpen)return;var r=rcOpen;food.recipes=food.recipes.filter(function(x){return x!==r});fSave();$('dlgR').close();renderRecipes();toast('Recipe deleted.','Undo',function(){food.recipes.push(r);fSave();renderRecipes()})};
