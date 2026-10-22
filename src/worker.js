@@ -518,7 +518,9 @@ async function handleAi(req, env) {
     if (w.status === 502) { const j = await w.json().catch(() => ({})); return json({ ...j, detail: ('gemini: ' + errs.join(' | ') + ' || ' + (j.detail || '')).slice(0, 400) }, 502); }
     return w;
   }
-  return aiWorkers(env, merged, images);
+  const w = await aiWorkers(env, merged, images);
+  if (w.status === 502) { const j = await w.json().catch(() => ({})); return json({ ...j, detail: ('GEMINI_API_KEY not found by the site || ' + (j.detail || '')).slice(0, 400) }, 502); }
+  return w;
 }
 
 async function aiClaude(env, merged, images) {
@@ -1851,7 +1853,7 @@ export default {
         case 'GET /api/config': {
           const connected = !!(await getSetting(env, owner, 'g_refresh'));
           return json({
-            ai: aiEnabled(env), notion: !!env.NOTION_TOKEN, gcal: gConfigured(env), gconnected: connected, tz: env.TIMEZONE || 'Asia/Jerusalem',
+            ai: aiEnabled(env), gemini: !!env.GEMINI_API_KEY, notion: !!env.NOTION_TOKEN, gcal: gConfigured(env), gconnected: connected, tz: env.TIMEZONE || 'Asia/Jerusalem',
             classroom: connected && (await classroomOk(env, owner)), mail: connected && (await mailOk(env, owner)), mailMod: connected && (await mailModOk(env, owner)),
           });
         }

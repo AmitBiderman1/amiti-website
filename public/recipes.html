@@ -75,7 +75,7 @@ var CATS=[['Baking & dough','🥖'],['Cakes & desserts','🍰'],['Meat','🥩'],
 var LEG={'אפייה ובצקים':'Baking & dough','עוגות וקינוחים':'Cakes & desserts','בשרי':'Meat','עוף':'Chicken','דגים':'Fish','צמחוני וטבעוני':'Vegetarian & vegan','פסטה ואורז':'Pasta & rice','מרקים':'Soups','סלטים ותוספות':'Salads & sides','ארוחות בוקר':'Breakfast','חטיפים ומשקאות':'Snacks & drinks','בריא וקל':'Healthy & light','אחר':'Other'};
 var EM={};CATS.forEach(function(c){EM[c[0]]=c[1]});
 var S={recipes:[],shop:[],view:'list',cur:null,add:false,busy:false,msg:'',err:false,sel:{},cd:false,cat:'',prefill:''};
-var NOTION=false,nMsg='',nT=null;
+var NOTION=false,GEM=false,nMsg='',nT=null,CFGOK=false;
 var snap={recipes:{},shop:{}},syncBusy=false,syncDirty=false,syncT=null,failN=0;
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
@@ -146,7 +146,7 @@ function listView(){var h='<div class="hero"><div class="big">🍳🥘🍰</div>
     h+='<h3>'+c[1]+' '+esc(c[0])+'</h3>';
     L.forEach(function(r){var n=S.shop.filter(function(x){return x.rid===r.id&&!x.done}).length;
       h+='<div class="rc" data-id="'+esc(r.id)+'"><span class="em">'+c[1]+'</span><div class="tx"><b dir="auto">'+esc(r.title)+'</b><small>'+r.ing.length+(r.ing.length===1?' ingredient':' ingredients')+(r.source?' · '+esc(hostOf(r.source)):'')+(n?' · 🛒 '+n+' to buy':'')+'</small></div><span class="go">›</span></div>'})});
-  if(NOTION)h+='<div class="st" style="margin-top:14px"><span id="nst">'+esc(nMsg)+'</span> <button class="btn" id="nsync" style="padding:2px 10px;font-size:.85rem">Sync with Notion</button></div>';
+  if(CFGOK)h+='<div class="st" style="margin-top:14px">AI: '+(GEM?'Gemini ✓':'Cloudflare AI (GEMINI_API_KEY not found)')+'<br><span id="nst">'+esc(nMsg)+'</span>'+(NOTION?' <button class="btn" id="nsync" style="padding:2px 10px;font-size:.85rem">Sync with Notion</button>':'')+'</div>';
   $('v').innerHTML=h;
   var b=$('new');if($('nsync'))$('nsync').onclick=function(){nRun(true)};if(b)b.onclick=function(){S.add=true;S.msg='';S.prefill='';render()};
   b=$('cx');if(b)b.onclick=function(){S.add=false;S.msg='';render()};
@@ -190,7 +190,7 @@ function drawShop(r){var list=mine(r),have={};list.forEach(function(x){have[x.na
   b=$('sa');if(b)b.onclick=function(){miss.forEach(function(t,i){if(S.sel[i]===false)return;S.shop.push({id:uid(),name:t.slice(0,120),done:false,rid:r.id,rname:r.title.slice(0,160)})});S.sel={};save();drawShop(r)}}
 $('dlgS').addEventListener('close',function(){render()});
 document.addEventListener('visibilitychange',function(){if(!document.hidden&&!syncBusy&&!syncT&&!$('dlgS').open)load().catch(function(){})});
-fetch('/api/config').then(function(r){return r.json()}).then(function(c){NOTION=!!c.notion;if(NOTION){nMsg='Notion connected';render();nTick(1500)}}).catch(function(){});
+fetch('/api/config').then(function(r){return r.json()}).then(function(c){CFGOK=true;GEM=!!c.gemini;NOTION=!!c.notion;if(!NOTION)nMsg='Notion: token not found (NOTION_TOKEN secret missing)';if(NOTION){nMsg='Notion connected';render();nTick(1500)}}).catch(function(){});
 load().then(function(){try{var q=new URLSearchParams(location.search).get('add');if(q){history.replaceState(null,'',location.pathname);S.add=true;S.view='list';S.prefill=q;render()}}catch(e){}}).catch(function(){$('v').innerHTML='<div class="empty">Could not load. Check your connection and reload.</div>'});
 })();
 </script>
