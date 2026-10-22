@@ -188,7 +188,7 @@ function listView(){var h='<div class="hero"><div class="big">🍳🥘🍰</div>
   CATS.forEach(function(c){if(S.cat&&S.cat!==c[0])return;var L=S.recipes.filter(function(r){return(r.cat||'Other')===c[0]}).reverse();if(!L.length)return;
     h+='<h3>'+c[1]+' '+esc(c[0])+'</h3>';
     L.forEach(function(r){var n=S.shop.filter(function(x){return x.rid===r.id&&!x.done}).length;
-      h+='<div class="rc" data-id="'+esc(r.id)+'"><span class="em">'+c[1]+'</span><div class="tx"><b dir="auto">'+esc(r.title)+'</b><small>'+r.ing.length+(r.ing.length===1?' ingredient':' ingredients')+(r.source?' · '+esc(hostOf(r.source)):'')+(n?' · 🛒 '+n+' to buy':'')+'</small></div><span class="go">›</span></div>'})});
+      h+='<div class="rc" data-id="'+esc(r.id)+'"><span class="em">'+c[1]+'</span><div class="tx"><b dir="auto">'+esc(r.title)+'</b><small>'+r.ing.length+(r.ing.length===1?' ingredient':' ingredients')+(r.author?' · by '+esc(r.author):r.source?' · '+esc(hostOf(r.source)):'')+(n?' · 🛒 '+n+' to buy':'')+'</small></div><span class="go">›</span></div>'})});
   if(CFGOK)h+='<div class="st" style="margin-top:14px">AI: '+(GEM?'Gemini ✓':'Cloudflare AI (GEMINI_API_KEY not found)')+'<br><span id="nst">'+esc(nMsg)+'</span>'+(NOTION?' <button class="btn" id="nsync" style="padding:2px 10px;font-size:.85rem">Sync with Notion</button>':'')+'</div>';
   $('v').innerHTML=h;
   var b=$('new');if($('nsync'))$('nsync').onclick=function(){nRun(true)};if(b)b.onclick=function(){S.add=true;S.msg='';S.prefill='';render()};
@@ -210,6 +210,7 @@ function oneView(){var r=S.recipes.filter(function(x){return x.id===S.cur})[0];i
   var open=mine(r).filter(function(x){return !x.done}).length,cat=r.cat||'Other';
   var h='<div class="top"><button class="btn" id="bk">← Back</button><div class="fr"><button class="btn p" id="shopb">🛒 Shopping list'+(open?'<span class="badge">'+open+'</span>':'')+'</button><button class="btn" id="del">Delete</button></div></div>'+
   '<div class="card"><div class="sub">'+EM[cat]+' '+esc(cat)+'</div><h2 dir="auto" style="font-size:1.4rem">'+esc(r.title)+'</h2><div class="sub">'+(r.servings?'Serves '+esc(r.servings):'')+(r.source?(r.servings?' · ':'')+'<a href="'+esc(r.source)+'" target="_blank" rel="noopener">Source: '+esc(hostOf(r.source))+'</a>':'')+'</div>'+
+  '<div class="fr" style="margin-top:8px"><span class="sub">Recipe by:</span><input type="text" id="au" dir="auto" maxlength="80" placeholder="Who is it from?" value="'+esc(r.author||'')+'" style="flex:1;min-width:140px"></div>'+
   '<div class="fr" style="margin-top:8px"><span class="sub">Style:</span><select id="cs" style="width:auto;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:4px 8px">'+CATS.map(function(c){return '<option'+(c[0]===cat?' selected':'')+'>'+esc(c[0])+'</option>'}).join('')+'</select></div></div>'+
   '<div class="card"><h2>Ingredients</h2>'+r.ing.map(function(t){return '<div class="row"><span class="t" dir="auto">'+esc(t)+'</span></div>'}).join('')+'</div>';
   if(r.steps.length){h+='<div class="card"><h2>Method</h2><ol>'+r.steps.map(function(s){return '<li dir="auto">'+esc(s)+'</li>'}).join('')+'</ol></div>'}
@@ -217,6 +218,7 @@ function oneView(){var r=S.recipes.filter(function(x){return x.id===S.cur})[0];i
   $('v').innerHTML=h;
   $('bk').onclick=function(){S.view='list';S.msg='';render()};
   $('shopb').onclick=function(){openShop(r)};
+  $('au').onchange=function(){r.author=this.value.trim().slice(0,80);save()};
   $('cs').onchange=function(){r.cat=this.value;save();render()};
   $('del').onclick=function(){if(!S.cd){S.cd=true;$('del').textContent='Sure? Tap again';return}S.cd=false;S.recipes=S.recipes.filter(function(x){return x.id!==r.id});save();S.view='list';render()}}
 /* the recipe's shopping list lives in a pop-up on the recipe, and is the same list as in Amiti's Shopping tab */

@@ -168,7 +168,7 @@ async function getState(env, owner) {
     getSetting(env, owner, 'wmins'),
     env.DB.prepare('SELECT id,name,done,rid,rname FROM shop WHERE owner=?').bind(owner).all(),
     env.DB.prepare('SELECT id,text,author FROM quotes WHERE owner=? ORDER BY added').bind(owner).all(),
-    env.DB.prepare('SELECT id,title,source,servings,ing,steps,notes,img,cat FROM recipes WHERE owner=? ORDER BY added').bind(owner).all(),
+    env.DB.prepare('SELECT id,title,source,servings,ing,steps,notes,img,cat,author FROM recipes WHERE owner=? ORDER BY added').bind(owner).all(),
   ]);
   return {
     tasks: t.results.map(({ gcal_id, ...r }) => ({ ...r, urgent: !!r.urgent, important: !!r.important, done: !!r.done, gcal: !!gcal_id })),
@@ -285,9 +285,9 @@ async function applySync(env, owner, b) {
     const arr = (x, n, len) => (Array.isArray(x) ? x : []).slice(0, n).map((t) => str(t, len).trim()).filter(Boolean);
     stmts.push(
       db.prepare(
-        `INSERT INTO recipes(owner,id,title,source,servings,ing,steps,notes,img,added,cat) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(owner,id) DO UPDATE SET title=excluded.title,source=excluded.source,servings=excluded.servings,ing=excluded.ing,steps=excluded.steps,notes=excluded.notes,img=excluded.img,cat=excluded.cat`
-      ).bind(owner, String(e.id), title, str(e.source, 500), str(e.servings, 40), JSON.stringify(arr(e.ing, 100, 200)), JSON.stringify(arr(e.steps, 80, 1200)), str(e.notes, 1500), /^https:\/\//.test(String(e.img)) ? str(e.img, 600) : '', now, str(e.cat, 30).trim())
+        `INSERT INTO recipes(owner,id,title,source,servings,ing,steps,notes,img,added,cat,author) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(owner,id) DO UPDATE SET title=excluded.title,source=excluded.source,servings=excluded.servings,ing=excluded.ing,steps=excluded.steps,notes=excluded.notes,img=excluded.img,cat=excluded.cat,author=excluded.author`
+      ).bind(owner, String(e.id), title, str(e.source, 500), str(e.servings, 40), JSON.stringify(arr(e.ing, 100, 200)), JSON.stringify(arr(e.steps, 80, 1200)), str(e.notes, 1500), /^https:\/\//.test(String(e.img)) ? str(e.img, 600) : '', now, str(e.cat, 30).trim(), str(e.author, 80).trim())
     );
   }
   for (const id of list(b.recipes?.del, 100)) {
@@ -1364,6 +1364,7 @@ function recipeFromJsonLd(html) {
     const yld = Array.isArray(r.recipeYield) ? r.recipeYield[0] : r.recipeYield;
     return {
       title: htmlDecode(String(r.name || '')).slice(0, 160),
+      author: htmlDecode(String((Array.isArray(r.author) ? r.author[0] : r.author)?.name || (typeof r.author === 'string' ? r.author : '') || '')).slice(0, 80),
       servings: yld ? String(yld).slice(0, 40) : '',
       ingredients: (Array.isArray(r.recipeIngredient) ? r.recipeIngredient : []).map((t) => htmlDecode(String(t)).trim()).filter(Boolean).slice(0, 100),
       steps: flatSteps(r.recipeInstructions).slice(0, 80),
@@ -1384,6 +1385,7 @@ async function readRecipePage(rawUrl) {
     let why = '';
     let tkFull = u.href;
     let tkCap = null;
+    let tkAuthor = '';
     const social = /(^|\.)(tiktok\.com|instagram\.com|facebook\.com|fb\.watch)$/.test(host);
     if (/(^|\.)tiktok\.com$/.test(host)) {
       // short share links (vm./vt.tiktok.com) must be resolved to the full video address first
@@ -1394,6 +1396,7 @@ async function readRecipePage(rawUrl) {
       const r = await fetch('https://www.tiktok.com/oembed?url=' + encodeURIComponent(full), { signal: ctl.signal, headers: { 'user-agent': BROWSER_UA } });
       if (r.ok) {
         const j = await r.json().catch(() => ({}));
+        if (j.author_name) tkAuthor = String(j.author_name).slice(0, 80);
         if (j.title) tkCap = { text: String(j.title).slice(0, 4000), title: '', img: typeof j.thumbnail_url === 'string' && j.thumbnail_url.startsWith('https://') ? j.thumbnail_url : '', source: full, kind: 'caption' };
         why = 'tiktok_no_caption';
       } else why = 'tiktok_' + r.status;
@@ -1416,12 +1419,13 @@ async function readRecipePage(rawUrl) {
               transcript = t.split('\n').filter((l) => l && !/^WEBVTT|-->|^\d+$/.test(l.trim())).join(' ').slice(0, 5000);
             }
             const cap = String(item.desc || '').slice(0, 2000);
-            if (slides.length || transcript) return { text: [cap, transcript].filter(Boolean).join('\n\n'), images: slides, title: '', img: slides[0] || '', source: tkFull, kind: slides.length ? 'photos' : 'subtitles' };
+            tkAuthor = String(item.author?.nickname || item.author?.uniqueId || tkAuthor || '').slice(0, 80);
+            if (slides.length || transcript) return { text: [cap, transcript].filter(Boolean).join('\n\n'), images: slides, title: '', img: slides[0] || '', source: tkFull, author: tkAuthor, kind: slides.length ? 'photos' : 'subtitles' };
             if (cap && !tkCap) tkCap = { text: cap, title: '', img: '', source: tkFull, kind: 'caption' };
           } else why = why || 'tiktok_no_data';
         } else why = why || 'tiktok_page_' + pr.status;
       } catch { why = why || 'tiktok_page_failed'; }
-      if (tkCap) return tkCap;
+      if (tkCap) return { ...tkCap, author: tkAuthor };
     }
     const r = await fetch(u.href, { signal: ctl.signal, redirect: 'follow', headers: { 'user-agent': social ? BROWSER_UA : 'Mozilla/5.0 (compatible; AmitisRecipeReader/1.0)', accept: 'text/html,application/xhtml+xml', 'accept-language': 'en,he;q=0.8' } });
     if (!r.ok) return { error: 'unreadable', status: r.status, why: why || 'http_' + r.status };
@@ -1434,7 +1438,7 @@ async function readRecipePage(rawUrl) {
     const text = `${title}\n${desc}\n${body}`.slice(0, 7000);
     if (text.replace(/\s/g, '').length < 40) return { error: 'unreadable', why: why || 'empty_page' };
     const img = metaContent(html, 'og:image');
-    return { text, title, img: img.startsWith('https://') ? img.slice(0, 600) : '', source: u.href, kind: 'page' };
+    return { text, title, img: img.startsWith('https://') ? img.slice(0, 600) : '', source: u.href, author: metaContent(html, 'author') || metaContent(html, 'og:site_name') || '', kind: 'page' };
   } catch (e) {
     return { error: 'unreadable', why: 'fetch_failed' };
   } finally { clearTimeout(timer); }
@@ -1648,6 +1652,11 @@ const newId = () => 'n' + crypto.randomUUID().replace(/-/g, '').slice(0, 14);
 async function nEnsureDbs(env, owner) {
   let rdb = await getSetting(env, owner, 'n_rdb');
   let sdb = await getSetting(env, owner, 'n_sdb');
+  if (rdb && (await getSetting(env, owner, 'n_rschema')) !== '2') {
+    // databases created before recipes had an author get the extra column once
+    await nApi(env, 'PATCH', `/databases/${rdb}`, { properties: { Author: { rich_text: {} } } }).catch((e) => { if (e.message === 'notion_auth') throw e; });
+    await setSetting(env, owner, 'n_rschema', '2');
+  }
   if (rdb && sdb) return { rdb, sdb };
   let parent = String(env.NOTION_PARENT_PAGE || '').replace(/-/g, '').match(/[0-9a-f]{32}/i)?.[0];
   if (!parent) {
@@ -1661,9 +1670,9 @@ async function nEnsureDbs(env, owner) {
   if (!rdb) {
     const d = await nApi(env, 'POST', '/databases', {
       parent: { type: 'page_id', page_id: parent }, title: [{ type: 'text', text: { content: 'Amiti’s Recipes' } }],
-      properties: { Name: { title: {} }, Style: { select: {} }, Servings: { rich_text: {} }, Source: { url: {} }, 'App ID': { rich_text: {} } },
+      properties: { Name: { title: {} }, Style: { select: {} }, Author: { rich_text: {} }, Servings: { rich_text: {} }, Source: { url: {} }, 'App ID': { rich_text: {} } },
     });
-    rdb = d.id; await setSetting(env, owner, 'n_rdb', rdb);
+    rdb = d.id; await setSetting(env, owner, 'n_rdb', rdb); await setSetting(env, owner, 'n_rschema', '2');
   }
   if (!sdb) {
     const d = await nApi(env, 'POST', '/databases', {
@@ -1685,10 +1694,10 @@ async function nQueryAll(env, db) {
   }
   return out;
 }
-const nRecipeHash = (r) => shortHash(JSON.stringify([r.title, r.cat || 'Other', r.servings || '', r.source || '', r.ing, r.steps, r.notes || '']));
+const nRecipeHash = (r) => shortHash(JSON.stringify([r.title, r.cat || 'Other', r.servings || '', r.source || '', r.ing, r.steps, r.notes || '', r.author || '']));
 const nShopHash = (s) => shortHash(JSON.stringify([s.name, s.done ? 1 : 0, s.rid || '', s.rname || '']));
 function nRecipeProps(r) {
-  return { Name: { title: nRich(r.title).slice(0, 1) }, Style: { select: { name: NOTION_CATS.includes(r.cat) ? r.cat : 'Other' } }, Servings: { rich_text: nRich(r.servings) }, Source: { url: /^https?:\/\//.test(r.source || '') ? r.source.slice(0, 1900) : null }, 'App ID': { rich_text: nRich(r.id) } };
+  return { Name: { title: nRich(r.title).slice(0, 1) }, Style: { select: { name: NOTION_CATS.includes(r.cat) ? r.cat : 'Other' } }, Servings: { rich_text: nRich(r.servings) }, Author: { rich_text: nRich(r.author || '').slice(0, 1) }, Source: { url: /^https?:\/\//.test(r.source || '') ? r.source.slice(0, 1900) : null }, 'App ID': { rich_text: nRich(r.id) } };
 }
 function nRecipeBlocks(r) {
   const b = [];
@@ -1724,7 +1733,7 @@ async function nReadRecipe(env, page) {
   }
   return {
     title: title.slice(0, 160), cat: NOTION_CATS.includes(cat) ? cat : (cat ? 'Other' : ''),
-    servings: nPlain(pr.Servings?.rich_text).trim().slice(0, 40), source: pr.Source?.url || '',
+    author: nPlain(pr.Author?.rich_text).trim().slice(0, 80), servings: nPlain(pr.Servings?.rich_text).trim().slice(0, 40), source: pr.Source?.url || '',
     ing: ing.slice(0, 100).map((x) => x.slice(0, 200)), steps: steps.slice(0, 80).map((x) => x.slice(0, 1200)), notes: notes.join('\n').slice(0, 1500),
   };
 }
@@ -1745,7 +1754,7 @@ async function notionSync(env, owner) {
     const { rdb, sdb } = await nEnsureDbs(env, owner);
     const [maps, recs, shop] = await Promise.all([
       db.prepare('SELECT kind,id,npage,hash,ntime FROM notion_map WHERE owner=?').bind(owner).all(),
-      db.prepare('SELECT id,title,source,servings,ing,steps,notes,cat FROM recipes WHERE owner=?').bind(owner).all(),
+      db.prepare('SELECT id,title,source,servings,ing,steps,notes,cat,author FROM recipes WHERE owner=?').bind(owner).all(),
       db.prepare('SELECT id,name,done,rid,rname FROM shop WHERE owner=?').bind(owner).all(),
     ]);
     const j = (t) => { try { const a = JSON.parse(t); return Array.isArray(a) ? a : []; } catch { return []; } };
@@ -1778,7 +1787,7 @@ async function notionSync(env, owner) {
         const n = await nReadRecipe(env, page);
         if (n.title && (n.ing.length || n.steps.length)) {
           const merged = { ...r, ...n, cat: n.cat || r.cat, source: n.source || '' };
-          stmts.push(db.prepare('UPDATE recipes SET title=?,source=?,servings=?,ing=?,steps=?,notes=?,cat=? WHERE owner=? AND id=?').bind(merged.title, merged.source, merged.servings, JSON.stringify(merged.ing), JSON.stringify(merged.steps), merged.notes, merged.cat, owner, r.id));
+          stmts.push(db.prepare('UPDATE recipes SET title=?,source=?,servings=?,ing=?,steps=?,notes=?,cat=?,author=? WHERE owner=? AND id=?').bind(merged.title, merged.source, merged.servings, JSON.stringify(merged.ing), JSON.stringify(merged.steps), merged.notes, merged.cat, merged.author || '', owner, r.id));
           setMap('r', r.id, m.npage, await nRecipeHash(merged), page.last_edited_time);
           stats.pulled++; stats.changed = true;
         } else setMap('r', r.id, m.npage, m.hash, page.last_edited_time);
@@ -1797,7 +1806,7 @@ async function notionSync(env, owner) {
       if (!n.title || !(n.ing.length || n.steps.length)) continue;
       const id = newId();
       const rec = { id, ...n, cat: n.cat || 'Other' };
-      stmts.push(db.prepare('INSERT INTO recipes(owner,id,title,source,servings,ing,steps,notes,img,added,cat) VALUES(?,?,?,?,?,?,?,?,?,?,?)').bind(owner, id, rec.title, rec.source, rec.servings, JSON.stringify(rec.ing), JSON.stringify(rec.steps), rec.notes, '', new Date().toISOString(), rec.cat));
+      stmts.push(db.prepare('INSERT INTO recipes(owner,id,title,source,servings,ing,steps,notes,img,added,cat,author) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').bind(owner, id, rec.title, rec.source, rec.servings, JSON.stringify(rec.ing), JSON.stringify(rec.steps), rec.notes, '', new Date().toISOString(), rec.cat, rec.author || ''));
       setMap('r', id, page.id, await nRecipeHash(rec), page.last_edited_time);
       stats.pulled++; stats.changed = true;
     }
@@ -1853,7 +1862,7 @@ async function notionSync(env, owner) {
 }
 
 /* ---------- Background recipe import (you add a link, text or screenshot; it is read and saved while you do something else) ---------- */
-const RECIPE_PROMPT = 'You turn a recipe (a web page, a social-media caption, a transcript or photos/screenshots, possibly several in order) into structured data. Keep the language of the source (Hebrew stays Hebrew). Reply with ONLY a JSON object: {"title": short recipe name, "category": exactly one of [' + NOTION_CATS.join(' | ') + '], "servings": text like "4" or "", "ingredients": [each ingredient as one string with its amount, e.g. "2 ביצים"], "steps": [short instruction strings in order], "notes": ""}. Use only what is in the source; do not invent ingredients. If there is no recipe at all, reply {"title":"","ingredients":[],"steps":[]}.';
+const RECIPE_PROMPT = 'You turn a recipe (a web page, a social-media caption, a transcript or photos/screenshots, possibly several in order) into structured data. Keep the language of the source (Hebrew stays Hebrew). Reply with ONLY a JSON object: {"title": short recipe name, "category": exactly one of [' + NOTION_CATS.join(' | ') + '], "servings": text like "4" or "", "author": the name of the person who created or posted the recipe if it is visible or stated (a TikTok/Instagram username, a blog or cook name), otherwise "", "ingredients": [each ingredient as one string with its amount, e.g. "2 ביצים"], "steps": [short instruction strings in order], "notes": ""}. Use only what is in the source; do not invent ingredients or names. If there is no recipe at all, reply {"title":"","ingredients":[],"steps":[]}.';
 function parseJsonObj(t) {
   const x = String(t || '');
   const a = x.indexOf('{'), b = x.lastIndexOf('}');
@@ -1888,19 +1897,19 @@ async function fetchImages(urls) {
 async function importRecipe(env, owner, input) {
   const url = (/https?:\/\/[^\s<>"']+/i.exec(input.text || '') || [''])[0].replace(/[).,;]+$/, '');
   const rest = String(input.text || '').replace(url, '').trim();
-  let content = '', images = [], src = '', img = '', rec = null;
+  let content = '', images = [], src = '', img = '', rec = null, author = '';
   if (input.image) {
     images = [input.image];
     content = RECIPE_PROMPT + '\n\nThe attached photo shows the recipe.';
   } else if (url && rest.length < 300) {
     const rd = await readRecipePage(url);
-    src = rd.source || url; img = rd.img || '';
+    src = rd.source || url; img = rd.img || ''; author = rd.author || '';
     if (rd.recipe && (rd.recipe.ingredients.length || rd.recipe.steps.length)) {
-      rec = rd.recipe; img = rec.img || img;
+      rec = rd.recipe; author = author || rec.author || ''; img = rec.img || img;
       try { const o = parseJsonObj(await aiRaw(env, RECIPE_PROMPT + '\n\nTitle: ' + rec.title + '\nIngredients: ' + rec.ingredients.join('; '), [])); rec.category = o?.category; } catch { /* keep Other */ }
     } else if (rd.images && rd.images.length) {
       images = await fetchImages(rd.images);
-      content = RECIPE_PROMPT + '\n\nCaption: ' + (rd.text || '') + '\n\nThe attached images are the slides of the post, in order.';
+      content = RECIPE_PROMPT + '\n\nPosted by: ' + (rd.author || 'unknown') + '\nCaption: ' + (rd.text || '') + '\n\nThe attached images are the slides of the post, in order.';
     } else if (rd.text) {
       content = RECIPE_PROMPT + '\n\nSource:\n' + (rest ? rest + '\n' : '') + rd.text.slice(0, 7000);
     } else if (rest.length >= 25) {
@@ -1914,14 +1923,15 @@ async function importRecipe(env, owner, input) {
     const o = parseJsonObj(await aiRaw(env, content, images));
     if (!o) throw new Error('no_recipe');
     rec = { title: o.title, servings: o.servings, ingredients: o.ingredients || o.ing, steps: o.steps, notes: o.notes, category: o.category };
+    author = author || String(o.author || '').replace(/^@/, '').trim();
   }
   const ing = (rec.ingredients || []).map((x) => String(x).trim().slice(0, 200)).filter(Boolean).slice(0, 100);
   const steps = (rec.steps || []).map((x) => String(x).trim().slice(0, 1200)).filter(Boolean).slice(0, 80);
   const title = String(rec.title || '').trim().slice(0, 160);
   if (!title || (!ing.length && !steps.length)) throw new Error('no_recipe');
   const id = newId();
-  await env.DB.prepare('INSERT INTO recipes(owner,id,title,source,servings,ing,steps,notes,img,added,cat) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
-    .bind(owner, id, title, str(src, 500), str(rec.servings, 40), JSON.stringify(ing), JSON.stringify(steps), str(rec.notes, 1500), /^https:\/\//.test(img) ? str(img, 600) : '', new Date().toISOString(), normCatS(rec.category)).run();
+  await env.DB.prepare('INSERT INTO recipes(owner,id,title,source,servings,ing,steps,notes,img,added,cat,author) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+    .bind(owner, id, title, str(src, 500), str(rec.servings, 40), JSON.stringify(ing), JSON.stringify(steps), str(rec.notes, 1500), /^https:\/\//.test(img) ? str(img, 600) : '', new Date().toISOString(), normCatS(rec.category), str(author || rec.author, 80)).run();
   return { id, title };
 }
 async function runImportJob(env, owner, jobId, input) {
@@ -1939,7 +1949,7 @@ async function exportAll(env, owner) {
     meals: await q('SELECT id,name,servings,ing FROM meals WHERE owner=?'),
     workouts: await q('SELECT id,day,kind,mins,kcal FROM workouts WHERE owner=?'),
     weights: await q('SELECT id,day,kg FROM weights WHERE owner=?'),
-    recipes: await q('SELECT id,title,source,servings,ing,steps,notes,cat FROM recipes WHERE owner=?'),
+    recipes: await q('SELECT id,title,source,servings,ing,steps,notes,cat,author FROM recipes WHERE owner=?'),
     quotes: await q('SELECT id,text,author FROM quotes WHERE owner=?'),
     mails: await q('SELECT id,sender,addr,subject,date,folder,trip,important FROM mails WHERE owner=? AND deleted=0'),
     mail_rules: await q('SELECT addr,folder,trip FROM mail_rules WHERE owner=?'),
