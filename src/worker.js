@@ -1322,6 +1322,7 @@ async function readRecipePage(rawUrl) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 9000);
   try {
+    let why = '';
     const social = /(^|\.)(tiktok\.com|instagram\.com|facebook\.com|fb\.watch)$/.test(host);
     if (/(^|\.)tiktok\.com$/.test(host)) {
       // short share links (vm./vt.tiktok.com) must be resolved to the full video address first
@@ -1333,10 +1334,11 @@ async function readRecipePage(rawUrl) {
       if (r.ok) {
         const j = await r.json().catch(() => ({}));
         if (j.title) return { text: String(j.title).slice(0, 4000), title: '', img: typeof j.thumbnail_url === 'string' && j.thumbnail_url.startsWith('https://') ? j.thumbnail_url : '', source: full, kind: 'caption' };
-      }
+        why = 'tiktok_no_caption';
+      } else why = 'tiktok_' + r.status;
     }
     const r = await fetch(u.href, { signal: ctl.signal, redirect: 'follow', headers: { 'user-agent': social ? BROWSER_UA : 'Mozilla/5.0 (compatible; AmitisRecipeReader/1.0)', accept: 'text/html,application/xhtml+xml', 'accept-language': 'en,he;q=0.8' } });
-    if (!r.ok) return { error: 'unreadable', status: r.status };
+    if (!r.ok) return { error: 'unreadable', status: r.status, why: why || 'http_' + r.status };
     const html = (await r.text()).slice(0, 600000);
     const rec = recipeFromJsonLd(html);
     if (rec && (rec.ingredients.length || rec.steps.length)) return { recipe: rec, source: u.href };
@@ -1344,11 +1346,11 @@ async function readRecipePage(rawUrl) {
     const desc = metaContent(html, 'og:description') || metaContent(html, 'description');
     const body = htmlDecode(html.replace(/<(script|style|noscript|svg|head)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
     const text = `${title}\n${desc}\n${body}`.slice(0, 7000);
-    if (text.replace(/\s/g, '').length < 40) return { error: 'unreadable' };
+    if (text.replace(/\s/g, '').length < 40) return { error: 'unreadable', why: why || 'empty_page' };
     const img = metaContent(html, 'og:image');
     return { text, title, img: img.startsWith('https://') ? img.slice(0, 600) : '', source: u.href, kind: 'page' };
   } catch (e) {
-    return { error: 'unreadable' };
+    return { error: 'unreadable', why: 'fetch_failed' };
   } finally { clearTimeout(timer); }
 }
 

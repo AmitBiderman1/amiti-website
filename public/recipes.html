@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="he">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#faf6ef">
-<title>אתר המתכונים של עמית</title>
+<title>Amit’s Recipes</title>
 <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap" rel="stylesheet">
@@ -64,24 +64,21 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
 </head>
 <body>
 <div class="wrap">
-<header><h1>🍳 אתר המתכונים של עמית</h1></header>
-<nav class="nav" id="nav"></nav>
+<header><a class="btn" href="/" id="back">← Back to Amiti’s</a><h1>🍳 Amit’s Recipes</h1></header>
 <div id="v"></div>
 </div>
 <dialog id="dlgS"><div id="dS"></div></dialog>
 <script>
 (function(){
 var $=function(i){return document.getElementById(i)};
-var CATS=[['אפייה ובצקים','🥖'],['עוגות וקינוחים','🍰'],['בשרי','🥩'],['עוף','🍗'],['דגים','🐟'],['צמחוני וטבעוני','🥬'],['פסטה ואורז','🍝'],['מרקים','🍲'],['סלטים ותוספות','🥗'],['ארוחות בוקר','🍳'],['חטיפים ומשקאות','🥤'],['בריא וקל','🥑'],['אחר','🍽️']];
+var CATS=[['Baking & dough','🥖'],['Cakes & desserts','🍰'],['Meat','🥩'],['Chicken','🍗'],['Fish','🐟'],['Vegetarian & vegan','🥬'],['Pasta & rice','🍝'],['Soups','🍲'],['Salads & sides','🥗'],['Breakfast','🍳'],['Snacks & drinks','🥤'],['Healthy & light','🥑'],['Other','🍽️']];
+var LEG={'אפייה ובצקים':'Baking & dough','עוגות וקינוחים':'Cakes & desserts','בשרי':'Meat','עוף':'Chicken','דגים':'Fish','צמחוני וטבעוני':'Vegetarian & vegan','פסטה ואורז':'Pasta & rice','מרקים':'Soups','סלטים ותוספות':'Salads & sides','ארוחות בוקר':'Breakfast','חטיפים ומשקאות':'Snacks & drinks','בריא וקל':'Healthy & light','אחר':'Other'};
 var EM={};CATS.forEach(function(c){EM[c[0]]=c[1]});
-var TABS=[['today','Today'],['tasks','Tasks'],['orders','Orders'],['cal','Calendar'],['food','Health'],['shop','Shopping'],['quotes','Quotes'],['inbox','Inbox']];
 var S={recipes:[],shop:[],view:'list',cur:null,add:false,busy:false,msg:'',err:false,sel:{},cd:false,cat:'',prefill:''};
 var snap={recipes:{},shop:{}},syncBusy=false,syncDirty=false,syncT=null,failN=0;
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
 function api(path,body){return fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().catch(function(){return{}}).then(function(j){if(!r.ok)throw{code:j.code||(r.status===429?'rate_limited':r.status===401?'auth':'upstream_error'),message:j.error||''};return j})})}
-/* nav identical to Amiti's, Recipes highlighted */
-(function(){var n=$('nav');TABS.forEach(function(x){var a=document.createElement('a');a.textContent=x[1];a.href='/#'+x[0];n.appendChild(a)});var s=document.createElement('span');s.textContent='Recipes';n.appendChild(s)})();
 /* sync: same /api/sync as Amiti's (recipes + shopping list) */
 function save(){clearTimeout(syncT);syncT=setTimeout(doSync,300)}
 function doSync(){syncT=null;if(syncBusy){syncDirty=true;return}
@@ -90,7 +87,7 @@ function doSync(){syncT=null;if(syncBusy){syncDirty=true;return}
     Object.keys(cur).forEach(function(id){var j=JSON.stringify(cur[id]);next[k][id]=j;if(old[id]!==j){body[k].upsert.push(cur[id]);n++}});
     Object.keys(old).forEach(function(id){if(!(id in cur)){body[k].del.push(id);n++}})}
   diff('recipes',S.recipes);diff('shop',S.shop);if(!n)return;syncBusy=true;
-  api('/api/sync',body).then(function(){snap=next;failN=0}).catch(function(){failN++;syncDirty=true;S.msg='השמירה נכשלה, מנסה שוב…';S.err=true})
+  api('/api/sync',body).then(function(){snap=next;failN=0}).catch(function(){failN++;syncDirty=true;S.msg='Could not save, retrying…';S.err=true})
    .then(function(){syncBusy=false;if(syncDirty){syncDirty=false;clearTimeout(syncT);syncT=setTimeout(doSync,Math.min(30000,2000*(failN||1)))}})}
 function load(){return fetch('/api/state').then(function(r){if(r.status===401){location.href='/login';throw 0}if(!r.ok)throw 0;return r.json()}).then(function(st){
   S.recipes=st.recipes||[];S.shop=st.shop||[];snap={recipes:{},shop:{}};S.recipes.forEach(function(e){snap.recipes[e.id]=JSON.stringify(e)});S.shop.forEach(function(e){snap.shop[e.id]=JSON.stringify(e)});render();autoSort()})}
@@ -103,72 +100,76 @@ function shrink(file){return new Promise(function(res,rej){var fr=new FileReader
 function ask(text,photo){
   var p=photo?shrink(photo).then(b64).then(function(d){return[{media_type:'image/jpeg',data:d}]}):Promise.resolve([]);
   return p.then(function(imgs){return api('/api/ai',{messages:[{role:'user',content:PROMPT+(text?'\n\nSource:\n'+text.slice(0,7000):'\n\nThe attached photo shows the recipe.')}],images:imgs})}).then(function(j){var o=parseJ(j.text);if(!o)throw{code:'no_recipe'};return o})}
-function normCat(c){c=String(c||'').trim();for(var i=0;i<CATS.length;i++)if(c===CATS[i][0]||c.indexOf(CATS[i][0])>=0)return CATS[i][0];return 'אחר'}
+function normCat(c){c=String(c||'').trim();if(LEG[c])return LEG[c];for(var i=0;i<CATS.length;i++)if(c===CATS[i][0]||c.indexOf(CATS[i][0])>=0)return CATS[i][0];return 'Other'}
 function firstUrl(t){var m=/https?:\/\/[^\s<>"']+/i.exec(t||'');return m?m[0].replace(/[).,;]+$/,''):''}
 function hostOf(u){try{return new URL(u).hostname.replace(/^www\./,'')}catch(e){return''}}
 function mk(r,src,img){var ing=(r.ingredients||r.ing||[]).map(function(x){return String(x).trim()}).filter(Boolean).slice(0,100),steps=(r.steps||[]).map(function(x){return String(x).trim()}).filter(Boolean).slice(0,80),title=String(r.title||'').trim();
   if(!title||(!ing.length&&!steps.length))return null;
   return{id:uid(),title:title.slice(0,160),source:src||'',servings:String(r.servings||'').slice(0,40),ing:ing,steps:steps,notes:String(r.notes||'').slice(0,1500),img:/^https:\/\//.test(img||'')?img:'',cat:normCat(r.category||r.cat)}}
 function imp(input,photo){
-  var url=photo?'':firstUrl(input),rest=input.replace(url,'').trim(),p;
+  var url=photo?'':firstUrl(input),rest=input.replace(url,'').trim(),p;S.why='';
   if(photo)p=ask('',photo).then(function(o){return mk(o,'','')});
-  else if(url&&rest.length<40)p=api('/api/recipes/fetch',{url:url}).then(function(j){
-    if(j.recipe){var r0=mk(j.recipe,j.source||url,j.recipe.img);if(r0)return ask('Title: '+j.recipe.title+'\nIngredients: '+(j.recipe.ingredients||[]).join('; ')).then(function(o){r0.cat=normCat(o.category);return r0}).catch(function(){r0.cat='אחר';return r0})}
-    if(j.text)return ask(j.text).then(function(o){return mk(o,j.source||url,j.img)});
+  else if(url&&rest.length<300)p=api('/api/recipes/fetch',{url:url}).catch(function(){return{error:'unreadable',why:'server'}}).then(function(j){
+    if(j.recipe){var r0=mk(j.recipe,j.source||url,j.recipe.img);if(r0)return ask('Title: '+j.recipe.title+'\nIngredients: '+(j.recipe.ingredients||[]).join('; ')).then(function(o){r0.cat=normCat(o.category);return r0}).catch(function(){r0.cat='Other';return r0})}
+    if(j.text)return ask((rest?rest+'\n':'')+j.text).then(function(o){return mk(o,j.source||url,j.img)});
+    S.why=j.why||'';
+    // the link could not be read, but the share text next to it may hold the recipe
+    if(rest.length>=25)return ask(rest).then(function(o){return mk(o,url,'')}).catch(function(){throw{code:'unreadable'}});
     throw{code:'unreadable'}});
   else p=ask(input).then(function(o){return mk(o,url,'')});
   return p.then(function(r){if(!r)throw{code:'no_recipe'};return r})}
 /* put old recipes without a category into the right style, quietly */
 var sorting=false;
-function autoSort(){var todo=S.recipes.filter(function(r){return !r.cat}).slice(0,25);if(!todo.length||sorting)return;sorting=true;
+function autoSort(){var ch=false;S.recipes.forEach(function(r){if(LEG[r.cat]){r.cat=LEG[r.cat];ch=true}});if(ch){save();render()}
+  var todo=S.recipes.filter(function(r){return !r.cat}).slice(0,25);if(!todo.length||sorting)return;sorting=true;
   api('/api/ai',{messages:[{role:'user',content:'Classify each recipe into exactly one category from ['+CATLIST+']. Reply with ONLY a JSON object mapping the id to the category. Recipes:\n'+todo.map(function(r){return r.id+': '+r.title+' — '+r.ing.slice(0,6).join(', ')}).join('\n')}],images:[]})
-  .then(function(j){var m=parseJ(j.text)||{};todo.forEach(function(r){r.cat=normCat(m[r.id])});save();render()}).catch(function(){}).then(function(){sorting=false})}
+  .then(function(j){var m=parseJ(j.text)||{};todo.forEach(function(r){if(m[r.id])r.cat=normCat(m[r.id])});save();render()}).catch(function(){}).then(function(){sorting=false})}
 /* views */
 function render(){if(S.view==='one')oneView();else listView()}
-function listView(){var h='<div class="hero"><div class="big">🍳🥘🍰</div><div><b>המתכונים שלי</b><div class="sub">'+S.recipes.length+' מתכונים, מסודרים לפי סגנון</div></div></div>';
-  if(S.add){h+='<div class="card"><h2>מתכון חדש</h2><p class="sub">הדביקי קישור (טיקטוק, אינסטגרם, אתר), כיתוב או טקסט של מתכון, או צרפי צילום מסך.</p><textarea id="in" dir="auto" placeholder="הדביקי כאן…">'+esc(S.prefill)+'</textarea><div class="fr" style="margin-top:8px"><button class="btn p" id="go"'+(S.busy?' disabled':'')+'>'+(S.busy?'כותב…':'כתוב לי את המתכון')+'</button><label class="btn" for="ph">📷 צילום מסך</label><input id="ph" type="file" accept="image/*" hidden><button class="btn" id="cx">ביטול</button></div><div class="st'+(S.err?' err':'')+'" style="margin-top:8px">'+esc(S.msg)+'</div></div>'}
-  else{h+='<div class="top"><button class="btn p" id="new">＋ מתכון חדש</button></div>';if(S.msg)h+='<div class="st'+(S.err?' err':'')+'" style="margin-bottom:8px">'+esc(S.msg)+'</div>'}
-  var used={};S.recipes.forEach(function(r){used[r.cat||'אחר']=(used[r.cat||'אחר']||0)+1});
-  if(S.recipes.length>1){h+='<div class="chips"><button class="chip'+(S.cat?'':' on')+'" data-c="">הכל</button>';CATS.forEach(function(c){if(used[c[0]])h+='<button class="chip'+(S.cat===c[0]?' on':'')+'" data-c="'+esc(c[0])+'">'+c[1]+' '+esc(c[0])+' ('+used[c[0]]+')</button>'});h+='</div>'}
-  if(!S.recipes.length&&!S.add)h+='<div class="empty">🥐 🧁 🍪<br>עוד אין מתכונים. לחצי "מתכון חדש" והדביקי את הראשון.</div>';
-  CATS.forEach(function(c){if(S.cat&&S.cat!==c[0])return;var L=S.recipes.filter(function(r){return(r.cat||'אחר')===c[0]}).reverse();if(!L.length)return;
+function listView(){var h='<div class="hero"><div class="big">🍳🥘🍰</div><div><b>My recipes</b><div class="sub">'+S.recipes.length+' recipes, grouped by style</div></div></div>';
+  if(S.add){h+='<div class="card"><h2>New recipe</h2><p class="sub">Paste a link (TikTok, Instagram, any site), a caption or the recipe text, or add a screenshot.</p><textarea id="in" dir="auto" placeholder="Paste here…">'+esc(S.prefill)+'</textarea><div class="fr" style="margin-top:8px"><button class="btn p" id="go"'+(S.busy?' disabled':'')+'>'+(S.busy?'Writing…':'Write the recipe')+'</button><label class="btn" for="ph">📷 Screenshot</label><input id="ph" type="file" accept="image/*" hidden><button class="btn" id="cx">Cancel</button></div><div class="st'+(S.err?' err':'')+'" style="margin-top:8px">'+esc(S.msg)+'</div></div>'}
+  else{h+='<div class="top"><button class="btn p" id="new">＋ New recipe</button></div>';if(S.msg)h+='<div class="st'+(S.err?' err':'')+'" style="margin-bottom:8px">'+esc(S.msg)+'</div>'}
+  var used={};S.recipes.forEach(function(r){var k=normCat(r.cat||'Other');used[k]=(used[k]||0)+1});
+  if(S.recipes.length>1){h+='<div class="chips"><button class="chip'+(S.cat?'':' on')+'" data-c="">All</button>';CATS.forEach(function(c){if(used[c[0]])h+='<button class="chip'+(S.cat===c[0]?' on':'')+'" data-c="'+esc(c[0])+'">'+c[1]+' '+esc(c[0])+' ('+used[c[0]]+')</button>'});h+='</div>'}
+  if(!S.recipes.length&&!S.add)h+='<div class="empty">🥐 🧁 🍪<br>No recipes yet. Tap “New recipe” and paste your first one.</div>';
+  CATS.forEach(function(c){if(S.cat&&S.cat!==c[0])return;var L=S.recipes.filter(function(r){return(r.cat||'Other')===c[0]}).reverse();if(!L.length)return;
     h+='<h3>'+c[1]+' '+esc(c[0])+'</h3>';
     L.forEach(function(r){var n=S.shop.filter(function(x){return x.rid===r.id&&!x.done}).length;
-      h+='<div class="rc" data-id="'+esc(r.id)+'"><span class="em">'+c[1]+'</span><div class="tx"><b dir="auto">'+esc(r.title)+'</b><small>'+r.ing.length+' מרכיבים'+(r.source?' · '+esc(hostOf(r.source)):'')+(n?' · 🛒 '+n+' לקנות':'')+'</small></div><span class="go">›</span></div>'})});
+      h+='<div class="rc" data-id="'+esc(r.id)+'"><span class="em">'+c[1]+'</span><div class="tx"><b dir="auto">'+esc(r.title)+'</b><small>'+r.ing.length+(r.ing.length===1?' ingredient':' ingredients')+(r.source?' · '+esc(hostOf(r.source)):'')+(n?' · 🛒 '+n+' to buy':'')+'</small></div><span class="go">›</span></div>'})});
   $('v').innerHTML=h;
   var b=$('new');if(b)b.onclick=function(){S.add=true;S.msg='';S.prefill='';render()};
   b=$('cx');if(b)b.onclick=function(){S.add=false;S.msg='';render()};
-  function run(photo){var v=$('in').value.trim();if(!photo&&!v){S.msg='הדביקי משהו קודם';S.err=true;render();return}
-    S.busy=true;S.msg=photo?'קורא את הצילום…':'קורא את המתכון…';S.err=false;S.prefill=v;render();
+  function run(photo){var v=$('in').value.trim();if(!photo&&!v){S.msg='Paste something first';S.err=true;render();return}
+    S.busy=true;S.msg=photo?'Reading the screenshot…':'Reading the recipe…';S.err=false;S.prefill=v;render();
     imp(v,photo).then(function(r){S.recipes.push(r);save();S.add=false;S.busy=false;S.prefill='';S.cur=r.id;S.view='one';S.msg='';render()}).catch(function(e){
-      var c=e&&e.code;S.busy=false;S.err=true;S.msg=c==='no_recipe'?'לא מצאתי שם מתכון. אם זה סרטון, המתכון לא תמיד כתוב בכיתוב – הדביקי את הטקסט או צרפי צילום מסך.':c==='unreadable'?'האתר לא נותן לקרוא את הקישור (טיקטוק ואינסטגרם חוסמים לפעמים). הדביקי את הכיתוב או צרפי צילום מסך של המתכון.':c==='rate_limited'?'ה-AI החינמי הגיע למכסה להיום, נסי מאוחר יותר.':'לא הצלחתי כרגע, נסי שוב.';render()})}
+      var c=e&&e.code;S.busy=false;S.err=true;S.msg=c==='no_recipe'?'I could not find a recipe there. In videos the recipe is often not in the caption – paste the text or add a screenshot.':c==='unreadable'?'I could not read this link (TikTok and Instagram sometimes block it)'+(S.why?' ['+S.why+']':'')+'. Paste the caption or add a screenshot of the recipe.':c==='rate_limited'?'The free AI hit today’s limit, try later.':'Something went wrong, try again.';render()})}
   b=$('go');if(b)b.onclick=function(){run(null)};
   b=$('ph');if(b)b.onchange=function(){var f=this.files&&this.files[0];this.value='';if(f)run(f)};
   Array.prototype.forEach.call($('v').querySelectorAll('.chip'),function(el){el.onclick=function(){S.cat=el.getAttribute('data-c');render()}});
   Array.prototype.forEach.call($('v').querySelectorAll('.rc'),function(el){el.onclick=function(){S.cur=el.getAttribute('data-id');S.view='one';S.msg='';window.scrollTo(0,0);render()}})}
 function mine(r){return S.shop.filter(function(x){return x.rid===r.id})}
 function oneView(){var r=S.recipes.filter(function(x){return x.id===S.cur})[0];if(!r){S.view='list';return render()}
-  var open=mine(r).filter(function(x){return !x.done}).length,cat=r.cat||'אחר';
-  var h='<div class="top"><button class="btn" id="bk">← חזרה</button><div class="fr"><button class="btn p" id="shopb">🛒 רשימת קניות'+(open?'<span class="badge">'+open+'</span>':'')+'</button><button class="btn" id="del">מחיקה</button></div></div>'+
-  '<div class="card"><div class="sub">'+EM[cat]+' '+esc(cat)+'</div><h2 dir="auto" style="font-size:1.4rem">'+esc(r.title)+'</h2><div class="sub">'+(r.servings?'מנות: '+esc(r.servings):'')+(r.source?(r.servings?' · ':'')+'<a href="'+esc(r.source)+'" target="_blank" rel="noopener">מקור: '+esc(hostOf(r.source))+'</a>':'')+'</div>'+
-  '<div class="fr" style="margin-top:8px"><span class="sub">סגנון:</span><select id="cs" style="width:auto;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:4px 8px">'+CATS.map(function(c){return '<option'+(c[0]===cat?' selected':'')+'>'+esc(c[0])+'</option>'}).join('')+'</select></div></div>'+
-  '<div class="card"><h2>מרכיבים</h2>'+r.ing.map(function(t){return '<div class="row"><span class="t" dir="auto">'+esc(t)+'</span></div>'}).join('')+'</div>';
-  if(r.steps.length){h+='<div class="card"><h2>הכנה</h2><ol>'+r.steps.map(function(s){return '<li dir="auto">'+esc(s)+'</li>'}).join('')+'</ol></div>'}
-  if(r.notes)h+='<div class="card"><b>טיפ:</b> <span dir="auto">'+esc(r.notes)+'</span></div>';
+  var open=mine(r).filter(function(x){return !x.done}).length,cat=r.cat||'Other';
+  var h='<div class="top"><button class="btn" id="bk">← Back</button><div class="fr"><button class="btn p" id="shopb">🛒 Shopping list'+(open?'<span class="badge">'+open+'</span>':'')+'</button><button class="btn" id="del">Delete</button></div></div>'+
+  '<div class="card"><div class="sub">'+EM[cat]+' '+esc(cat)+'</div><h2 dir="auto" style="font-size:1.4rem">'+esc(r.title)+'</h2><div class="sub">'+(r.servings?'Serves '+esc(r.servings):'')+(r.source?(r.servings?' · ':'')+'<a href="'+esc(r.source)+'" target="_blank" rel="noopener">Source: '+esc(hostOf(r.source))+'</a>':'')+'</div>'+
+  '<div class="fr" style="margin-top:8px"><span class="sub">Style:</span><select id="cs" style="width:auto;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:4px 8px">'+CATS.map(function(c){return '<option'+(c[0]===cat?' selected':'')+'>'+esc(c[0])+'</option>'}).join('')+'</select></div></div>'+
+  '<div class="card"><h2>Ingredients</h2>'+r.ing.map(function(t){return '<div class="row"><span class="t" dir="auto">'+esc(t)+'</span></div>'}).join('')+'</div>';
+  if(r.steps.length){h+='<div class="card"><h2>Method</h2><ol>'+r.steps.map(function(s){return '<li dir="auto">'+esc(s)+'</li>'}).join('')+'</ol></div>'}
+  if(r.notes)h+='<div class="card"><b>Tip:</b> <span dir="auto">'+esc(r.notes)+'</span></div>';
   $('v').innerHTML=h;
   $('bk').onclick=function(){S.view='list';S.msg='';render()};
   $('shopb').onclick=function(){openShop(r)};
   $('cs').onchange=function(){r.cat=this.value;save();render()};
-  $('del').onclick=function(){if(!S.cd){S.cd=true;$('del').textContent='בטוחה? לחצי שוב';return}S.cd=false;S.recipes=S.recipes.filter(function(x){return x.id!==r.id});save();S.view='list';render()}}
+  $('del').onclick=function(){if(!S.cd){S.cd=true;$('del').textContent='Sure? Tap again';return}S.cd=false;S.recipes=S.recipes.filter(function(x){return x.id!==r.id});save();S.view='list';render()}}
 /* the recipe's shopping list lives in a pop-up on the recipe, and is the same list as in Amiti's Shopping tab */
 function openShop(r){S.sel={};drawShop(r);try{$('dlgS').showModal()}catch(e){$('dlgS').setAttribute('open','')}}
 function drawShop(r){var list=mine(r),have={};list.forEach(function(x){have[x.name]=1});var miss=r.ing.filter(function(t){return !have[t]});
-  var h='<div class="top"><h2 style="margin:0">🛒 '+esc(r.title)+'</h2><button class="btn" id="sx">סגור</button></div>';
-  if(list.length){h+='<div>';list.forEach(function(s){h+='<div class="row'+(s.done?' done':'')+'"><input type="checkbox" data-id="'+esc(s.id)+'"'+(s.done?' checked':'')+'><span class="t" dir="auto"><span>'+esc(s.name)+'</span></span><a href="https://www.google.com/search?q='+encodeURIComponent('חצי חינם '+s.name)+'" target="_blank" rel="noopener" title="חיפוש בחצי חינם" style="text-decoration:none">🔍</a><button class="x" data-x="'+esc(s.id)+'" aria-label="מחיקה">×</button></div>'});h+='</div>';
-    if(list.some(function(x){return x.done}))h+='<div style="margin-top:8px"><button class="btn" id="sc">נקי את מה שנקנה</button></div>'}
-  else h+='<div class="sub">עוד לא בחרת מה לקנות למתכון הזה.</div>';
-  if(miss.length){h+='<h3 style="color:var(--ink)">הוסיפי לרשימה</h3>';miss.forEach(function(t,i){h+='<label class="row"><input type="checkbox" data-i="'+i+'"'+(S.sel[i]===false?'':' checked')+'><span class="t" dir="auto">'+esc(t)+'</span></label>'});h+='<div style="margin-top:10px"><button class="btn p" id="sa">הוסף לרשימה</button></div>'}
-  h+='<p class="sub" style="margin-bottom:0">הרשימה הזו מופיעה גם ב-Shopping ב-Amiti\'s.</p>';
+  var h='<div class="top"><h2 style="margin:0">🛒 '+esc(r.title)+'</h2><button class="btn" id="sx">Close</button></div>';
+  if(list.length){h+='<div>';list.forEach(function(s){h+='<div class="row'+(s.done?' done':'')+'"><input type="checkbox" data-id="'+esc(s.id)+'"'+(s.done?' checked':'')+'><span class="t" dir="auto"><span>'+esc(s.name)+'</span></span><a href="https://www.google.com/search?q='+encodeURIComponent('חצי חינם '+s.name)+'" target="_blank" rel="noopener" title="Search at Hatzi Hinam" style="text-decoration:none">🔍</a><button class="x" data-x="'+esc(s.id)+'" aria-label="מחיקה">×</button></div>'});h+='</div>';
+    if(list.some(function(x){return x.done}))h+='<div style="margin-top:8px"><button class="btn" id="sc">Clear bought items</button></div>'}
+  else h+='<div class="sub">Nothing on the list for this recipe yet.</div>';
+  if(miss.length){h+='<h3 style="color:var(--ink)">Add to the list</h3>';miss.forEach(function(t,i){h+='<label class="row"><input type="checkbox" data-i="'+i+'"'+(S.sel[i]===false?'':' checked')+'><span class="t" dir="auto">'+esc(t)+'</span></label>'});h+='<div style="margin-top:10px"><button class="btn p" id="sa">Add to list</button></div>'}
+  h+='<p class="sub" style="margin-bottom:0">This list also appears in Shopping in Amiti\'s.</p>';
   $('dS').innerHTML=h;
   $('sx').onclick=function(){$('dlgS').close();render()};
   Array.prototype.forEach.call($('dS').querySelectorAll('input[data-id]'),function(c){c.onchange=function(){var s=S.shop.filter(function(x){return x.id===c.getAttribute('data-id')})[0];if(s){s.done=c.checked;save();drawShop(r)}}});
@@ -178,7 +179,7 @@ function drawShop(r){var list=mine(r),have={};list.forEach(function(x){have[x.na
   b=$('sa');if(b)b.onclick=function(){miss.forEach(function(t,i){if(S.sel[i]===false)return;S.shop.push({id:uid(),name:t.slice(0,120),done:false,rid:r.id,rname:r.title.slice(0,160)})});S.sel={};save();drawShop(r)}}
 $('dlgS').addEventListener('close',function(){render()});
 document.addEventListener('visibilitychange',function(){if(!document.hidden&&!syncBusy&&!syncT&&!$('dlgS').open)load().catch(function(){})});
-load().then(function(){try{var q=new URLSearchParams(location.search).get('add');if(q){history.replaceState(null,'',location.pathname);S.add=true;S.view='list';S.prefill=q;render()}}catch(e){}}).catch(function(){$('v').innerHTML='<div class="empty">לא הצלחתי לטעון. בדקי חיבור ורענני.</div>'});
+load().then(function(){try{var q=new URLSearchParams(location.search).get('add');if(q){history.replaceState(null,'',location.pathname);S.add=true;S.view='list';S.prefill=q;render()}}catch(e){}}).catch(function(){$('v').innerHTML='<div class="empty">Could not load. Check your connection and reload.</div>'});
 })();
 </script>
 </body>
