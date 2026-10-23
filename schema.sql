@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   src       TEXT NOT NULL DEFAULT '',
   rec       TEXT NOT NULL DEFAULT '',
   updated   TEXT NOT NULL,
+  done_at   TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (owner, id)
 );
 CREATE INDEX IF NOT EXISTS tasks_due ON tasks (owner, due);

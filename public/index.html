@@ -213,6 +213,7 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
 .wk .b.over{background:var(--hi)}
 .wk small{font-size:.68rem;color:var(--mute)}
 .wk .c.sel small:last-child{color:var(--ink);font-weight:700}
+.sumL{margin:2px 0;padding-left:18px}.sumL li{margin:2px 0}.sumL s{opacity:.65}
 </style>
 </head>
 <body>
@@ -225,6 +226,7 @@ textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-rad
   <section id="v-today">
     <h2 id="todayTitle" style="margin:4px 2px 10px"></h2>
     <div class="tiles" id="tiles"></div>
+    <div class="card hide" id="tSum"><h2>🌙 Evening summary</h2><div id="tSumB"></div></div>
     <div class="card"><h2>Tasks</h2><ul id="todayList"></ul></div>
     <div class="card" id="tLine"><h2>My day</h2><div id="tNext" class="note" style="margin-bottom:6px"></div><div id="tTl"></div><div id="tHealth" class="note" style="margin-top:8px"></div></div>
     <div class="card hide" id="tMail"><h2>Important mail</h2><div id="tMailList"></div></div>
@@ -525,7 +527,7 @@ function isoD(d){return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate(
 function isoDT(d){return isoD(d)+'T'+p2(d.getHours())+':'+p2(d.getMinutes())}
 function eff(t){return t.snooze||t.due||''}
 function fmt(s){var d=new Date(s);return d.toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short'})+', '+d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}
-function load(){tasks=(INIT.tasks||[]).map(function(t){return {id:String(t.id),text:t.text,due:t.due||'',dur:t.dur||30,snooze:t.snooze||'',fired:t.fired||'',tag:t.tag||'priv',urgent:!!t.urgent,important:!!t.important,done:!!t.done,gcal:t.gcal?1:0,rec:t.rec||''}});
+function load(){tasks=(INIT.tasks||[]).map(function(t){return {id:String(t.id),text:t.text,due:t.due||'',dur:t.dur||30,snooze:t.snooze||'',fired:t.fired||'',tag:t.tag||'priv',urgent:!!t.urgent,important:!!t.important,done:!!t.done,gcal:t.gcal?1:0,rec:t.rec||'',doneAt:t.done_at||''}});
   tasks.forEach(function(t){if(t.due===undefined){t.due=t.date?t.date+'T09:00':'';t.snooze='';t.fired=t.due;delete t.date}if(t.snooze===undefined)t.snooze='';if(t.fired===undefined)t.fired='';if(!t.dur)t.dur=30;if(!t.tag){t.tag='priv';t.urgent=t.pri===3;t.important=t.pri>=2}})}
 function save(){sync()}
 try{var th=localStorage.getItem('amiti-theme');if(th)document.documentElement.setAttribute('data-theme',th)}catch(e){}
@@ -541,7 +543,7 @@ function nextDue(due,rec){var d=new Date(due);if(isNaN(d))return '';var n=Date.n
     else{g=999}}
   step();while(d.getTime()<=n&&g<400){g++;step()}
   return g>=400?'':isoDT(d)}
-function setDone(t,v){t.done=v;
+function setDone(t,v){t.done=v;t.doneAt=v?new Date().toISOString():'';
   if(v&&t.rec&&t.due){var nd=nextDue(t.due,t.rec);
     if(nd&&!tasks.some(function(x){return !x.done&&x.text===t.text&&x.due===nd&&x.rec===t.rec})){
       tasks.push({id:uid(),text:t.text,due:nd,dur:t.dur,snooze:'',fired:'',tag:t.tag,urgent:t.urgent,important:t.important,done:false,gcal:0,rec:t.rec});say('Next one: '+fmt(nd))}}}
@@ -714,6 +716,7 @@ function renderToday(){try{mailToday()}catch(e){}var td=isoD(new Date());loadTod
   po.forEach(function(o){var d=document.createElement('div');d.className='ev';var tm=document.createElement('time');tm.textContent=PL[o.status];d.appendChild(tm);
     var s=document.createElement('span');s.textContent=o.shop+(o.item?': '+o.item:'');s.style.cursor='pointer';s.onclick=function(){goTab('orders')};d.appendChild(s);ol.appendChild(d)});
   try{renderTimeline(l,ev,td)}catch(e){console.error(e)}
+  try{renderSummary(l,td,ft,g)}catch(e){console.error(e)}
   // tiles
   var tl=$('tiles');tl.innerHTML='';
   function tile(label,big,small,go){var b=document.createElement('button');b.className='tile';b.type='button';
@@ -723,6 +726,22 @@ function renderToday(){try{mailToday()}catch(e){}var td=isoD(new Date());loadTod
   tile('Tasks',String(l.length),(doneToday?doneToday+' done · ':'')+(overdue?overdue+' overdue':'open today'),'tasks');
   tile('Calendar',tEv===null?'–':String(ev.length),next?'Next '+next.time+' '+next.title:(tEv===null?'not loaded':ev.length?'nothing more today':'free day'),'cal');
   tile('Food',Math.round(ft.kcal)+'',left>=0?Math.round(left)+' kcal left':Math.round(-left)+' kcal over','food')}
+/* evening summary: what got done today, what is left over (move it to tomorrow in one tap), and what is waiting tomorrow */
+function renderSummary(l,td,ft,g){function esc(x){return String(x==null?'':x).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}var box=$('tSum'),show=new Date().getHours()>=18||location.hash==='#summary';box.classList.toggle('hide',!show);if(!show)return;
+  var mid=new Date();mid.setHours(0,0,0,0);var t0=mid.toISOString(),tm=new Date();tm.setDate(tm.getDate()+1);var tmr=isoD(tm);
+  var dn=tasks.filter(function(t){return t.done&&t.doneAt&&t.doneAt>=t0});
+  var tom=tasks.filter(function(t){return !t.done&&t.due&&t.due.slice(0,10)===tmr}).sort(byTime);
+  var wk=(food.work[td]||[]).reduce(function(a,e){return a+(+e.mins||0)},0),wt=food.wt[td];
+  function list(arr,fn){return '<ul class="sumL">'+arr.slice(0,8).map(fn).join('')+(arr.length>8?'<li class="note">and '+(arr.length-8)+' more</li>':'')+'</ul>'}
+  var mood=dn.length>=5?'What a day – '+dn.length+' things done 💪':dn.length?'Nice, you got '+dn.length+' done today.':l.length?'Quiet day. Tomorrow is a fresh start.':'A calm day. 🌿';
+  var h='<p style="margin:0 0 10px;font-weight:600">'+esc(mood)+'</p>';
+  h+='<div class="note" style="margin:6px 0 2px">✓ Done today ('+dn.length+')</div>'+(dn.length?list(dn,function(t){return '<li><s>'+esc(t.text)+'</s></li>'}):'<p class="note" style="margin:2px 0">Nothing marked done yet.</p>');
+  h+='<div class="note" style="margin:10px 0 2px">⏭ Left over ('+l.length+')</div>'+(l.length?list(l,function(t){return '<li>'+esc(t.text)+'</li>'})+'<button class="btn" id="sumMove" style="margin-top:4px">Move all to tomorrow</button>':'<p class="note" style="margin:2px 0">Nothing left over 🎉</p>');
+  h+='<div class="note" style="margin:10px 0 2px">📅 Tomorrow ('+tom.length+')</div>'+(tom.length?list(tom,function(t){return '<li><b>'+esc(t.due.slice(11,16))+'</b> '+esc(t.text)+'</li>'}):'<p class="note" style="margin:2px 0">Nothing planned yet.</p>');
+  h+='<div class="note" style="margin-top:10px">🍽 '+((food.log[td]||[]).length?Math.round(ft.kcal)+' / '+g+' kcal':'No food logged')+' · 🏃 '+wk+' / '+food.wmins+' min'+(wt?' · ⚖️ '+wt.kg+' kg':'')+'</div>';
+  $('tSumB').innerHTML=h;
+  var mv=$('sumMove');if(mv)mv.onclick=function(){l.forEach(function(t){var tm2=(t.due&&t.due.slice(11,16))||'09:00';t.due=tmr+'T'+tm2;t.snooze='';t.fired=''});save();say('Moved '+l.length+' to tomorrow');render()};
+  if(location.hash==='#summary'&&!renderSummary.done){renderSummary.done=1;setTimeout(function(){box.scrollIntoView({behavior:'smooth',block:'start'})},200)}}
 function renderTimeline(l,ev,td){var items=[],now=Date.now();
   l.forEach(function(t){var e=eff(t);var ms=e?new Date(e).getTime():0;items.push({at:ms,time:e&&e.slice(0,10)===td?e.slice(11,16):(e?'overdue':''),title:t.text,kind:'task',t:t,late:ms&&ms<now})});
   var tnames={};l.forEach(function(t){tnames[t.text.trim().toLowerCase()]=1});
@@ -1409,7 +1428,7 @@ if(CFG.ai){sm=aiShim;smImg=true}smTried=true;
 $('gConnect').onclick=gConnectClick;
 load();primeSnap();gMcpTried=true;if(CFG.gcal){mcp=gShim}else{gState='nomcp'}
 notifLabel();try{if('Notification' in window&&Notification.permission==='granted')enablePush()}catch(e){}render();check();setInterval(check,15000);
-nTick(2500);if(CFG.gcal)gWatch(true);setupClassroom();if(CFG.mail){loadOrders();loadMailToday()}if(location.hash==='#orders')tab='orders';if(location.hash==='#health')tab='food';if(location.hash==='#shop')tab='shop';if(location.hash==='#quotes')tab='quotes';if(location.hash==='#inbox')tab='inbox';if(location.hash==='#recipes'){location.replace('/recipes.html');return}var hh=location.hash.slice(1);if(hh&&TABS.some(function(x){return x[0]===hh&&hh!=='recipes'}))tab=hh;
+nTick(2500);if(CFG.gcal)gWatch(true);setupClassroom();if(CFG.mail){loadOrders();loadMailToday()}if(location.hash==='#orders')tab='orders';if(location.hash==='#summary')tab='today';if(location.hash==='#health')tab='food';if(location.hash==='#shop')tab='shop';if(location.hash==='#quotes')tab='quotes';if(location.hash==='#inbox')tab='inbox';if(location.hash==='#recipes'){location.replace('/recipes.html');return}var hh=location.hash.slice(1);if(hh&&TABS.some(function(x){return x[0]===hh&&hh!=='recipes'}))tab=hh;
 }
 Promise.all([fetch('/api/state').then(function(r){if(!r.ok)throw 0;return r.json()}),fetch('/api/config').then(function(r){if(!r.ok)throw 0;return r.json()})]).then(function(a){boot(a[0],a[1])}).catch(function(){document.body.innerHTML='<p style="padding:24px;font-family:sans-serif">Could not load your data. Check your connection and reload.</p>'});
 </script>

@@ -158,7 +158,7 @@ const delSetting = (env, owner, key) =>
 async function getState(env, owner) {
   const cutoff = new Date(Date.now() - 120 * 86400000).toISOString().slice(0, 10);
   const [t, f, m, goal, wk, wt, burn, wmins, sh, qt, rc] = await Promise.all([
-    env.DB.prepare('SELECT id,text,due,dur,snooze,fired,tag,urgent,important,done,rec,gcal_id FROM tasks WHERE owner=?').bind(owner).all(),
+    env.DB.prepare('SELECT id,text,due,dur,snooze,fired,tag,urgent,important,done,rec,gcal_id,done_at FROM tasks WHERE owner=?').bind(owner).all(),
     env.DB.prepare('SELECT id,day,slot,name,kcal,p,c,f FROM food WHERE owner=? AND day>=?').bind(owner, cutoff).all(),
     env.DB.prepare('SELECT id,name,servings,ing FROM meals WHERE owner=?').bind(owner).all(),
     getSetting(env, owner, 'goal'),
@@ -206,14 +206,15 @@ async function applySync(env, owner, b) {
     if (!text) continue;
     stmts.push(
       db.prepare(
-        `INSERT INTO tasks(owner,id,text,due,dur,snooze,fired,tag,urgent,important,done,rec,updated)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+        `INSERT INTO tasks(owner,id,text,due,dur,snooze,fired,tag,urgent,important,done,rec,updated,done_at)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,CASE WHEN ?=1 THEN ? ELSE '' END)
          ON CONFLICT(owner,id) DO UPDATE SET text=excluded.text,due=excluded.due,dur=excluded.dur,snooze=excluded.snooze,
            fired=excluded.fired,tag=excluded.tag,urgent=excluded.urgent,important=excluded.important,done=excluded.done,
-           rec=excluded.rec,updated=excluded.updated`
+           rec=excluded.rec,updated=excluded.updated,
+           done_at=CASE WHEN excluded.done=0 THEN '' WHEN tasks.done=1 THEN tasks.done_at ELSE excluded.updated END`
       ).bind(
         owner, String(t.id), text, dt(t.due), Math.round(num(t.dur, 5, 1440, 30)), dt(t.snooze), dt(t.fired),
-        TAGS.includes(t.tag) ? t.tag : 'priv', bit(t.urgent), bit(t.important), bit(t.done), RECS.includes(t.rec) ? t.rec : '', now
+        TAGS.includes(t.tag) ? t.tag : 'priv', bit(t.urgent), bit(t.important), bit(t.done), RECS.includes(t.rec) ? t.rec : '', now, bit(t.done), now
       )
     );
     calTasks.push({ id: String(t.id), text, due: dt(t.due), dur: Math.round(num(t.dur, 5, 1440, 30)), tag: TAGS.includes(t.tag) ? t.tag : 'priv', done: !!t.done });
@@ -882,7 +883,7 @@ async function syncClassroom(env, owner, force = false) {
       const turned = state[w.id] === 'TURNED_IN' || state[w.id] === 'RETURNED';
       const ex = await env.DB.prepare('SELECT id,done FROM tasks WHERE owner=? AND src=?').bind(owner, src).first();
       if (ex) {
-        if (turned && !ex.done) { await env.DB.prepare('UPDATE tasks SET done=1,updated=? WHERE owner=? AND id=?').bind(now, owner, ex.id).run(); done++; }
+        if (turned && !ex.done) { await env.DB.prepare('UPDATE tasks SET done=1,updated=?,done_at=? WHERE owner=? AND id=?').bind(now, now, owner, ex.id).run(); done++; }
         continue;
       }
       if (await isSeen(env, owner, 'cr', src)) continue;
@@ -1533,7 +1534,7 @@ async function sendPush(env, owner, note) {
   const subs = (await env.DB.prepare('SELECT endpoint,p256dh,auth FROM push_subs WHERE owner=?').bind(owner).all()).results;
   if (!subs.length) return 0;
   const v = await ensureVapid(env, owner);
-  const body = JSON.stringify({ title: str(note.title, 100), body: str(note.body, 200), url: note.url || '/', tag: str(note.tag || '', 60) });
+  const body = JSON.stringify({ title: str(note.title, 100), body: str(note.body, 300), url: note.url || '/', tag: str(note.tag || '', 60) });
   let ok = 0;
   for (const s of subs) {
     try {
@@ -1593,12 +1594,21 @@ async function dayReport(env, owner) {
     getSetting(env, owner, 'goal'), getSetting(env, owner, 'burn'), getSetting(env, owner, 'wmins'),
   ]);
   const g = Number(goal) > 0 ? Number(goal) : 2000, b = Number(burn) > 0 ? Number(burn) : 300, wm = Number(wmins) > 0 ? Number(wmins) : 30;
-  const parts = [
-    fd.n ? `Ate ${fd.k} of ${g} kcal` : 'No food logged',
-    `Workout ${wk.m}/${wm} min, burned ${wk.k}/${b} kcal`,
-  ];
-  if (wt) parts.push(`Weight ${wt.kg} kg`);
-  const ok = await sendPush(env, owner, { title: '🌙 Your day', body: parts.join(' · '), url: '/#health', tag: 'report' });
+  // tasks: done since local midnight, still open from today or before, and what is waiting tomorrow
+  const since = new Date(Date.now() - (hour * 60 + Number(stamp.slice(14, 16))) * 60000).toISOString();
+  const tmr = localStamp(env, Date.now() + 86400000).slice(0, 10);
+  const [dn, lo, tm] = await Promise.all([
+    env.DB.prepare("SELECT COUNT(*) n FROM tasks WHERE owner=? AND done=1 AND done_at>=?").bind(owner, since).first(),
+    env.DB.prepare("SELECT COUNT(*) n FROM tasks WHERE owner=? AND done=0 AND due<>'' AND substr(due,1,10)<=?").bind(owner, day).first(),
+    env.DB.prepare("SELECT text,due FROM tasks WHERE owner=? AND done=0 AND substr(due,1,10)=? ORDER BY due").bind(owner, tmr).all(),
+  ]);
+  const tl = tm.results || [];
+  const line1 = [`✓ ${dn.n} done`, lo.n ? `⏭ ${lo.n} left over` : 'nothing left over', tl.length ? `📅 ${tl.length} tomorrow, first ${tl[0].due.slice(11, 16)} ${str(tl[0].text, 40)}` : 'tomorrow is free'];
+  const parts = [fd.n ? `Ate ${fd.k}/${g} kcal` : 'No food logged', `Workout ${wk.m}/${wm} min`];
+  if (wt) parts.push(`${wt.kg} kg`);
+  const note = { title: '🌙 Evening summary', body: line1.join(' · ') + '\n' + parts.join(' · '), url: '/#summary', tag: 'report' };
+  if (env.__dryRun) return note;
+  const ok = await sendPush(env, owner, note);
   if (ok) await setSetting(env, owner, 'report_day', day);
   return ok;
 }
@@ -1977,7 +1987,7 @@ async function exportAll(env, owner) {
   };
 }
 
-export { notionSync, readRecipePage, recipeFromJsonLd, mailDigest, restoreMail, syncGmail, trashMail, scanInbox, listInbox, scheduledRun, runReminders, sendPush, ensureVapid, encryptPush, vapidHeader, syncClassroom, checkOrders };
+export { dayReport, notionSync, readRecipePage, recipeFromJsonLd, mailDigest, restoreMail, syncGmail, trashMail, scanInbox, listInbox, scheduledRun, runReminders, sendPush, ensureVapid, encryptPush, vapidHeader, syncClassroom, checkOrders };
 
 export default {
   async fetch(req, env, ctx) {
