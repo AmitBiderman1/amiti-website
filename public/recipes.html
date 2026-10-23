@@ -196,8 +196,11 @@ function listView(){var h='<div class="hero"><div class="big">🍳🥘🍰</div>
   function run(photo){var v=$('in').value.trim();if(!photo&&!v){S.msg='Paste something first';S.err=true;render();return}
     S.busy=true;S.msg='Sending…';S.err=false;S.prefill=v;render();
     (photo?shrink(photo).then(b64).then(function(d){return{image:{media_type:'image/jpeg',data:d}}}):Promise.resolve({text:v}))
-      .then(function(body){return api('/api/recipes/import',body)})
-      .then(function(){S.add=false;S.busy=false;S.prefill='';S.err=false;S.msg='Added to the queue ✓ It will appear here when it is ready – you can leave this page.';pollJobs();render()})
+      .then(function(body){body.wait=true;var req=api('/api/recipes/import',body);
+        /* the request stays open while the AI reads it; the job row shows up from polling meanwhile */
+        req.then(pollJobs,pollJobs);setTimeout(pollJobs,1500);
+        return Promise.race([req,new Promise(function(r){setTimeout(r,2500)})])})
+      .then(function(){S.add=false;S.busy=false;S.prefill='';S.err=false;S.msg='Added to the queue ✓ It will appear here when it is ready.';pollJobs();render()})
       .catch(function(e){S.busy=false;S.err=true;S.msg='Could not send it, try again.'+(e&&e.detail?' ['+String(e.detail).slice(0,120)+']':'');render()})}
   b=$('go');if(b)b.onclick=function(){run(null)};
   b=$('ph');if(b)b.onchange=function(){var f=this.files&&this.files[0];this.value='';if(f)run(f)};

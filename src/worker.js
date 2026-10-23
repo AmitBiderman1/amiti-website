@@ -558,6 +558,13 @@ async function geminiModels(env, errs) {
     return geminiCache.list;
   } catch (e) { errs.push('list models failed'); return []; }
 }
+// Keep "thinking" short: it is what makes a screenshot take 20s+. 2.5 uses a token budget, 3.x a level.
+function geminiThink(model) {
+  if (/gemini-2\.5-flash/.test(model)) return { thinkingConfig: { thinkingBudget: 0 } };
+  if (/gemini-2\.5-pro/.test(model)) return { thinkingConfig: { thinkingBudget: 128 } };
+  if (/gemini-[3-9]/.test(model)) return { thinkingConfig: { thinkingLevel: 'low' } };
+  return {};
+}
 async function aiGemini(env, merged, images, errs = []) {
   const contents = merged.map((m, i) => {
     const parts = [{ text: m.content }];
@@ -573,10 +580,10 @@ async function aiGemini(env, merged, images, errs = []) {
     globalThis.__aiLast = model + ' @' + (Date.now() - t0) + 'ms';
     try {
       const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-        signal: AbortSignal.timeout(Math.min(left - 1500, mi === 0 && !images.length ? 13000 : 20000)),
+        signal: AbortSignal.timeout(Math.min(left - 1500, left > 40000 ? 45000 : mi === 0 && !images.length ? 13000 : 20000)),
         method: 'POST',
         headers: { 'x-goog-api-key': env.GEMINI_API_KEY, 'content-type': 'application/json' },
-        body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: 4096, temperature: 0.3 } }),
+        body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: 4096, temperature: 0.3, ...geminiThink(model) } }),
       });
       if (!r.ok) {
         const eb = await r.json().catch(() => ({}));
@@ -1878,9 +1885,9 @@ function parseJsonObj(t) {
 }
 const normCatS = (c) => NOTION_CATS.find((x) => x === String(c || '').trim()) || NOTION_CATS.find((x) => String(c || '').includes(x)) || 'Other';
 // Plain "ask the AI" for server jobs: Claude key, else Gemini, else Workers AI (first image only).
-async function aiRaw(env, content, images) {
+async function aiRaw(env, content, images, deadline) {
   const merged = [{ role: 'user', content }];
-  merged.deadline = Date.now() + 26000;
+  merged.deadline = deadline || Date.now() + 26000;
   if (env.ANTHROPIC_API_KEY) { const r = await aiClaude(env, merged, images.slice(0, 8)); const j = await r.json().catch(() => ({})); if (r.ok && j.text) return j.text; throw new Error('ai_failed'); }
   const errs = [];
   if (env.GEMINI_API_KEY) { const g = await aiGemini(env, merged, images.slice(0, 10), errs); if (g) return (await g.json()).text; }
@@ -1928,7 +1935,7 @@ async function importRecipe(env, owner, input) {
     src = url;
   }
   if (!rec) {
-    const o = parseJsonObj(await aiRaw(env, content, images));
+    const o = parseJsonObj(await aiRaw(env, content, images, input.deadline));
     if (!o) throw new Error('no_recipe');
     rec = { title: o.title, servings: o.servings, ingredients: o.ingredients || o.ing, steps: o.steps, notes: o.notes, category: o.category };
     author = author || String(o.author || '').replace(/^@/, '').trim();
@@ -1942,11 +1949,12 @@ async function importRecipe(env, owner, input) {
     .bind(owner, id, title, str(src, 500), str(rec.servings, 40), JSON.stringify(ing), JSON.stringify(steps), str(rec.notes, 1500), /^https:\/\//.test(img) ? str(img, 600) : '', new Date().toISOString(), normCatS(rec.category), str(author || rec.author, 80)).run();
   return { id, title };
 }
-async function runImportJob(env, owner, jobId, input) {
+async function runImportJob(env, owner, jobId, input, budget = 27000) {
+  input.deadline = Date.now() + budget - 1500;
   let status = 'done', error = '', rid = '', title = '';
   // Pages kills background work ~30s after the response, so give up first and record why.
   let timer;
-  const cutoff = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('ai_timeout ' + (input.image ? Math.round(input.image.data.length / 1024) + 'KB image' : 'text') + (globalThis.__aiLast ? ' last: ' + globalThis.__aiLast : ''))), 27000); });
+  const cutoff = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('ai_timeout ' + (input.image ? Math.round(input.image.data.length / 1024) + 'KB image' : 'text') + (globalThis.__aiLast ? ' last: ' + globalThis.__aiLast : ''))), budget); });
   try { const r = await Promise.race([importRecipe(env, owner, input), cutoff]); clearTimeout(timer); rid = r.id; title = r.title; } catch (e) { clearTimeout(timer); status = 'failed'; error = String(e && e.message || e).slice(0, 160); }
   await env.DB.prepare('UPDATE recipe_jobs SET status=?,error=?,rid=?,label=CASE WHEN ?<>\'\' THEN ? ELSE label END WHERE owner=? AND id=?').bind(status, error, rid, title, title, owner, jobId).run().catch(() => {});
 }
@@ -2059,7 +2067,11 @@ export default {
           const label = input.image ? 'Screenshot' : (/https?:\/\/([^\/\s]+)/.exec(input.text) || [])[1] || input.text.slice(0, 40);
           await env.DB.prepare("DELETE FROM recipe_jobs WHERE owner=? AND created<?").bind(owner, new Date(Date.now() - 2 * 86400000).toISOString()).run();
           await env.DB.prepare("INSERT INTO recipe_jobs(owner,id,label,status,created) VALUES(?,?,?,'working',?)").bind(owner, jid, str(label, 80), new Date().toISOString()).run();
-          await background(ctx, runImportJob(env, owner, jid, input));
+          // The page keeps this request open while the AI works (no 30s limit); if the page is closed,
+          // waitUntil still gives it ~30s. Pages that do not send wait:true get the old quick reply.
+          const p = runImportJob(env, owner, jid, input, b?.wait ? 100000 : 27000);
+          await background(ctx, p);
+          if (b?.wait) await p;
           return json({ job: jid });
         }
         case 'GET /api/recipes/jobs': {
