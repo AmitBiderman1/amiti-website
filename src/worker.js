@@ -1914,8 +1914,8 @@ async function importRecipe(env, owner, input) {
   const rest = String(input.text || '').replace(url, '').trim();
   let content = '', images = [], src = '', img = '', rec = null, author = '';
   if (input.image) {
-    images = [input.image];
-    content = RECIPE_PROMPT + '\n\nThe attached photo shows the recipe.';
+    images = input.images || [input.image];
+    content = RECIPE_PROMPT + (images.length > 1 ? '\n\nThe ' + images.length + ' attached photos are parts of ONE recipe, in order – combine them into a single recipe.' : '\n\nThe attached photo shows the recipe.') + (input.note ? '\nNote from the user: ' + input.note : '');
   } else if (url && rest.length < 300) {
     const rd = await readRecipePage(url);
     src = rd.source || url; img = rd.img || ''; author = rd.author || '';
@@ -1954,7 +1954,7 @@ async function runImportJob(env, owner, jobId, input, budget = 27000) {
   let status = 'done', error = '', rid = '', title = '';
   // Pages kills background work ~30s after the response, so give up first and record why.
   let timer;
-  const cutoff = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('ai_timeout ' + (input.image ? Math.round(input.image.data.length / 1024) + 'KB image' : 'text') + (globalThis.__aiLast ? ' last: ' + globalThis.__aiLast : ''))), budget); });
+  const cutoff = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('ai_timeout ' + (input.image ? (input.images || [input.image]).length + ' image(s) ' + Math.round((input.images || [input.image]).reduce((a, x) => a + x.data.length, 0) / 1024) + 'KB' : 'text') + (globalThis.__aiLast ? ' last: ' + globalThis.__aiLast : ''))), budget); });
   try { const r = await Promise.race([importRecipe(env, owner, input), cutoff]); clearTimeout(timer); rid = r.id; title = r.title; } catch (e) { clearTimeout(timer); status = 'failed'; error = String(e && e.message || e).slice(0, 160); }
   await env.DB.prepare('UPDATE recipe_jobs SET status=?,error=?,rid=?,label=CASE WHEN ?<>\'\' THEN ? ELSE label END WHERE owner=? AND id=?').bind(status, error, rid, title, title, owner, jobId).run().catch(() => {});
 }
@@ -2060,11 +2060,13 @@ export default {
         case 'POST /api/recipes/import': {
           let b;
           try { b = await req.json(); } catch { return fail(400, 'Bad request', 'bad_request'); }
-          const im = b?.image;
-          const input = im && typeof im.data === 'string' && im.data.length < 7_000_000 && /^image\/(jpeg|png|webp|gif)$/.test(String(im.media_type)) ? { image: { media_type: im.media_type, data: im.data } } : { text: str(b?.text, 8000).trim() };
+          const okIm = (im) => im && typeof im.data === 'string' && im.data.length < 7_000_000 && /^image\/(jpeg|png|webp|gif)$/.test(String(im.media_type));
+          let ims = (Array.isArray(b?.images) ? b.images : b?.image ? [b.image] : []).filter(okIm).slice(0, 8).map((im) => ({ media_type: im.media_type, data: im.data }));
+          let tot = 0; ims = ims.filter((im) => (tot += im.data.length) < 18_000_000);
+          const input = ims.length ? { images: ims, image: ims[0], note: str(b?.text, 2000).trim() } : { text: str(b?.text, 8000).trim() };
           if (!input.image && !input.text) return fail(400, 'Nothing to import', 'bad_request');
           const jid = newId();
-          const label = input.image ? 'Screenshot' : (/https?:\/\/([^\/\s]+)/.exec(input.text) || [])[1] || input.text.slice(0, 40);
+          const label = input.image ? (input.images.length > 1 ? input.images.length + ' screenshots' : 'Screenshot') : (/https?:\/\/([^\/\s]+)/.exec(input.text) || [])[1] || input.text.slice(0, 40);
           await env.DB.prepare("DELETE FROM recipe_jobs WHERE owner=? AND created<?").bind(owner, new Date(Date.now() - 2 * 86400000).toISOString()).run();
           await env.DB.prepare("INSERT INTO recipe_jobs(owner,id,label,status,created) VALUES(?,?,?,'working',?)").bind(owner, jid, str(label, 80), new Date().toISOString()).run();
           // The page keeps this request open while the AI works (no 30s limit); if the page is closed,
