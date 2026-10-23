@@ -564,14 +564,16 @@ async function aiGemini(env, merged, images, errs = []) {
     if (i === merged.length - 1) for (const im of images) parts.push({ inline_data: { mime_type: im.media_type, data: im.data } });
     return { role: m.role === 'assistant' ? 'model' : 'user', parts };
   });
-  const models = [...new Set([env.GEMINI_MODEL, ...(await geminiModels(env, errs)), 'gemini-2.5-flash'].filter(Boolean))].slice(0, 5);
+  let models = [...new Set([env.GEMINI_MODEL, ...(await geminiModels(env, errs)), 'gemini-2.5-flash'].filter(Boolean))].slice(0, 5);
+  if (images.length) models = [...models.filter((n) => !/pro/.test(n)), ...models.filter((n) => /pro/.test(n))];
   const t0 = Date.now();
   for (const [mi, model] of models.slice(0, images.length ? 3 : 5).entries()) {
     const left = (merged.deadline || 0) ? merged.deadline - Date.now() : 60000;
     if (left < 4000) { errs.push('out of time'); break; }
+    globalThis.__aiLast = model + ' @' + (Date.now() - t0) + 'ms';
     try {
       const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-        signal: AbortSignal.timeout(Math.min(left - 1500, mi === 0 ? 13000 : 22000)),
+        signal: AbortSignal.timeout(Math.min(left - 1500, mi === 0 && !images.length ? 13000 : 20000)),
         method: 'POST',
         headers: { 'x-goog-api-key': env.GEMINI_API_KEY, 'content-type': 'application/json' },
         body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: 4096, temperature: 0.3 } }),
@@ -1878,7 +1880,7 @@ const normCatS = (c) => NOTION_CATS.find((x) => x === String(c || '').trim()) ||
 // Plain "ask the AI" for server jobs: Claude key, else Gemini, else Workers AI (first image only).
 async function aiRaw(env, content, images) {
   const merged = [{ role: 'user', content }];
-  merged.deadline = Date.now() + 22000;
+  merged.deadline = Date.now() + 26000;
   if (env.ANTHROPIC_API_KEY) { const r = await aiClaude(env, merged, images.slice(0, 8)); const j = await r.json().catch(() => ({})); if (r.ok && j.text) return j.text; throw new Error('ai_failed'); }
   const errs = [];
   if (env.GEMINI_API_KEY) { const g = await aiGemini(env, merged, images.slice(0, 10), errs); if (g) return (await g.json()).text; }
@@ -1944,7 +1946,7 @@ async function runImportJob(env, owner, jobId, input) {
   let status = 'done', error = '', rid = '', title = '';
   // Pages kills background work ~30s after the response, so give up first and record why.
   let timer;
-  const cutoff = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('ai_timeout: the AI took too long, try a smaller or clearer screenshot')), 24000); });
+  const cutoff = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('ai_timeout ' + (input.image ? Math.round(input.image.data.length / 1024) + 'KB image' : 'text') + (globalThis.__aiLast ? ' last: ' + globalThis.__aiLast : ''))), 27000); });
   try { const r = await Promise.race([importRecipe(env, owner, input), cutoff]); clearTimeout(timer); rid = r.id; title = r.title; } catch (e) { clearTimeout(timer); status = 'failed'; error = String(e && e.message || e).slice(0, 160); }
   await env.DB.prepare('UPDATE recipe_jobs SET status=?,error=?,rid=?,label=CASE WHEN ?<>\'\' THEN ? ELSE label END WHERE owner=? AND id=?').bind(status, error, rid, title, title, owner, jobId).run().catch(() => {});
 }
