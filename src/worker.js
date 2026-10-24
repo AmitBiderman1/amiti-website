@@ -2,6 +2,16 @@
 // Every request is checked against the Cloudflare Access login before anything is served.
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
+// Sent with every page: no embedding in other sites (clickjacking), no plugins, forms only to this site.
+const SEC = {
+  'content-security-policy': "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'",
+  'x-frame-options': 'DENY', 'x-content-type-options': 'nosniff', 'referrer-policy': 'strict-origin-when-cross-origin',
+  'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()', 'strict-transport-security': 'max-age=31536000',
+};
+// Changes may only come from this site's own pages (not from another website the browser is on).
+const crossSite = (req, url) => req.method !== 'GET' && req.method !== 'HEAD' &&
+  ((req.headers.get('origin') && req.headers.get('origin') !== url.origin) || req.headers.get('sec-fetch-site') === 'cross-site');
+async function withSec(res) { const h = new Headers(res.headers); for (const [k, v] of Object.entries(SEC)) h.set(k, v); return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h }); }
 const json = (obj, status = 200, extra = {}) =>
   new Response(JSON.stringify(obj), { status, headers: { ...JSON_HEADERS, ...extra } });
 const fail = (status, error, code) => json({ error, code }, status);
@@ -1994,9 +2004,9 @@ export default {
     const url = new URL(req.url);
     if (!(env.TEAM_DOMAIN && env.ACCESS_AUD) && pwMode(env)) {
       if (url.pathname === '/login' && req.method === 'GET') {
-        return new Response(LOGIN_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+        return new Response(LOGIN_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...SEC } });
       }
-      if (url.pathname === '/api/login' && req.method === 'POST') return handleLogin(req, env);
+      if (url.pathname === '/api/login' && req.method === 'POST') return crossSite(req, url) ? fail(403, 'Not allowed', 'bad_origin') : handleLogin(req, env);
       if (url.pathname === '/api/logout') {
         return new Response(null, { status: 302, headers: { location: '/login', 'set-cookie': 'amitis_s=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0' } });
       }
@@ -2005,7 +2015,8 @@ export default {
     if (auth instanceof Response) return auth;
     const owner = auth;
 
-    if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(req);
+    if (!url.pathname.startsWith('/api/')) return withSec(await env.ASSETS.fetch(req));
+    if (crossSite(req, url)) return fail(403, 'Not allowed', 'bad_origin');
 
     try {
       const route = `${req.method} ${url.pathname}`;
