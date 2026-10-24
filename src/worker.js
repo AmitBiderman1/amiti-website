@@ -64,8 +64,8 @@ async function authenticate(req, env, url) {
     const token = req.headers.get('Cf-Access-Jwt-Assertion');
     if (!token) return new Response('Sign-in required.', { status: 401 });
     try {
-      const owner = await verifyAccessJwt(token, env);
-      if (owner) return owner;
+      const who = await verifyAccessJwt(token, env);
+      if (who) return 'owner'; // one person's app: the Access policy decides who gets in; the data stays under the same owner as with the password
     } catch { /* fall through */ }
     return new Response('Sign-in required.', { status: 401 });
   }
@@ -2010,6 +2010,9 @@ export default {
       if (url.pathname === '/api/logout') {
         return new Response(null, { status: 302, headers: { location: '/login', 'set-cookie': 'amitis_s=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0' } });
       }
+    }
+    if (env.TEAM_DOMAIN && env.ACCESS_AUD && (url.pathname === '/api/logout' || url.pathname === '/login')) {
+      return new Response(null, { status: 302, headers: { location: url.pathname === '/login' ? '/' : '/cdn-cgi/access/logout', 'cache-control': 'no-store' } });
     }
     const auth = await authenticate(req, env, url);
     if (auth instanceof Response) return auth;
