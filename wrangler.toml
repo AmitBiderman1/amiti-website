@@ -17,6 +17,8 @@ binding = "AI"
 
 [vars]
 TIMEZONE = "Asia/Jerusalem"
+# Who may "Sign in with Google": SHA-256 of the Google address, lower-case (comma-separate to allow more than one).
+OWNER_EMAIL_SHA256 = "2513f6790c3fc1747809c185f45c8839fa42ebe252ae226d8d0751ad67633fea"
 # Notion page "Amiti's" where the recipe and shopping databases are created (the integration must be connected to it).
 NOTION_PARENT_PAGE = "401e20c9ca488168b326ce514cd9dd24"
 # Optional: only if you protect the app with Cloudflare Access instead of a password (see README).

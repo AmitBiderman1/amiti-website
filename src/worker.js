@@ -69,7 +69,7 @@ async function authenticate(req, env, url) {
     } catch { /* fall through */ }
     return new Response('Sign-in required.', { status: 401 });
   }
-  if (pwMode(env)) {
+  if (pwMode(env) || gLoginMode(env)) {
     if (await sessionOk(req, env)) return 'owner';
     if (url.pathname.startsWith('/api/')) return fail(401, 'Sign-in required', 'unauthorised');
     return new Response(null, { status: 302, headers: { location: '/login', 'cache-control': 'no-store' } });
@@ -101,7 +101,7 @@ function safeEq(a, b) {
 async function sessionOk(req, env) {
   const [exp, sig] = cookie(req, 'amitis_s').split('.');
   if (!exp || !sig || !(Number(exp) > Date.now())) return false;
-  return safeEq(sig, await hmacHex(env.APP_PASSWORD, 's:' + exp));
+  return safeEq(sig, await hmacHex(sessKey(env), 's:' + exp));
 }
 const LOGIN_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Amiti’s</title><style>
@@ -114,6 +114,60 @@ button{background:#8a5a3b;color:#fff;border-color:#8a5a3b;cursor:pointer;font-we
 fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:document.getElementById('p').value})})
 .then(function(r){if(r.ok){location.href='/'}else{m.textContent=r.status===429?'Too many attempts. Try again in 15 minutes.':'Wrong password.'}}).catch(function(){m.textContent='Network error.'})}</script></body></html>`;
 
+/* ---------- Sign in with Google (only the owner's Google account gets in) ----------
+   Uses the same Google client as the Calendar connection and the same return address (/api/google/callback),
+   so nothing changes in Google Cloud. OWNER_EMAIL_SHA256 (in wrangler.toml) holds the SHA-256 of the allowed
+   address(es), lower-case, comma-separated, so the address itself is not written in the code. */
+const ownerHashes = (env) => String(env.OWNER_EMAIL_SHA256 || '').split(',').map((s) => s.trim().toLowerCase()).filter((s) => /^[0-9a-f]{64}$/.test(s));
+const gLoginMode = (env) => !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) && ownerHashes(env).length > 0;
+const sessKey = (env) => env.APP_PASSWORD || env.GOOGLE_CLIENT_SECRET;
+async function sha256hex(s) { return [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))].map((b) => b.toString(16).padStart(2, '0')).join(''); }
+const G_LOGIN_ERR = { not_allowed: 'This Google account is not allowed here.', cancelled: 'Google sign-in was cancelled.', expired: 'That took too long. Try again.', google: 'Google sign-in failed. Try again.' };
+const G_BTN = '<a class="g" href="/api/google/login"><svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>Sign in with Google</a>';
+const G_CSS = '<style>.g{display:flex;align-items:center;justify-content:center;gap:10px;padding:11px;border-radius:8px;background:#fff;color:#1f1f1f;text-decoration:none;font-weight:600;border:1px solid #dadce0}.g:hover{background:#f6f6f6}details{font-size:.85rem;opacity:.85}details summary{cursor:pointer;margin-bottom:8px}details[open]{display:grid;gap:10px}</style>';
+function loginPage(html, env, url) {
+  const err = G_LOGIN_ERR[url.searchParams.get('e')] || '';
+  let h = html.replace('</head>', G_CSS + '</head>').replace('<p id="m" role="status"></p>', `<p id="m" role="status">${err}</p>`);
+  if (!gLoginMode(env)) return h;
+  const pw = (h.match(/<input id="p"[^>]*><button>Sign in<\/button>/) || [''])[0];
+  return h.replace(pw, G_BTN + (pwMode(env) && pw ? `<details><summary>Use the password instead</summary>${pw.replace(' autofocus', '')}</details>` : ''));
+}
+function googleLoginStart(env, url) {
+  if (!gLoginMode(env)) return new Response(null, { status: 302, headers: { location: '/login' } });
+  const state = 'L' + crypto.randomUUID().replace(/-/g, ''), nonce = crypto.randomUUID().replace(/-/g, '');
+  const q = new URLSearchParams({ client_id: env.GOOGLE_CLIENT_ID.trim(), redirect_uri: `${url.origin}/api/google/callback`, response_type: 'code', scope: 'openid email', prompt: 'select_account', state, nonce });
+  return new Response(null, { status: 302, headers: {
+    location: 'https://accounts.google.com/o/oauth2/v2/auth?' + q, 'cache-control': 'no-store',
+    'set-cookie': `gl_state=${state}.${nonce}; Path=/api/google; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
+  } });
+}
+// Returns the session cookie value when the Google account is the owner's, otherwise an error code.
+async function googleLoginFinish(req, env, url) {
+  const gerr = url.searchParams.get('error');
+  if (gerr) return { error: gerr === 'access_denied' ? 'cancelled' : 'google' };
+  const [st, nonce] = (cookie(req, 'gl_state') || '').split('.');
+  const code = url.searchParams.get('code');
+  if (!st || !nonce || url.searchParams.get('state') !== st) return { error: 'expired' };
+  if (!code) return { error: 'google' };
+  let t = {};
+  try {
+    const r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ code, client_id: env.GOOGLE_CLIENT_ID.trim(), client_secret: env.GOOGLE_CLIENT_SECRET.trim(), redirect_uri: `${url.origin}/api/google/callback`, grant_type: 'authorization_code' }) });
+    if (!r.ok) return { error: 'google' };
+    t = await r.json();
+  } catch { return { error: 'google' }; }
+  let p;
+  try { p = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(String(t.id_token).split('.')[1].replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)))); } catch { return { error: 'google' }; }
+  // The token came straight from Google over HTTPS in exchange for our secret, so its claims can be trusted as-is.
+  if (p.aud !== env.GOOGLE_CLIENT_ID.trim() || !['https://accounts.google.com', 'accounts.google.com'].includes(p.iss) || p.nonce !== nonce || !(p.exp * 1000 > Date.now())) return { error: 'google' };
+  if (!(p.email_verified === true || p.email_verified === 'true') || !ownerHashes(env).includes(await sha256hex(String(p.email || '').trim().toLowerCase()))) return { error: 'not_allowed' };
+  return { ok: true };
+}
+
+async function newSession(env) {
+  const exp = Date.now() + 30 * 86400000;
+  return `amitis_s=${exp}.${await hmacHex(sessKey(env), 's:' + exp)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000`;
+}
 async function handleLogin(req, env) {
   const key = 'login_fail';
   const rec = (await getSetting(env, 'owner', key)) || '0:0';
@@ -129,11 +183,7 @@ async function handleLogin(req, env) {
     return fail(401, 'Wrong password', 'unauthorised');
   }
   await delSetting(env, 'owner', key);
-  const exp = Date.now() + 30 * 86400000;
-  const sig = await hmacHex(env.APP_PASSWORD, 's:' + exp);
-  return json({ ok: true }, 200, {
-    'set-cookie': `amitis_s=${exp}.${sig}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000`,
-  });
+  return json({ ok: true }, 200, { 'set-cookie': await newSession(env) });
 }
 
 /* ---------- helpers ---------- */
@@ -2002,9 +2052,17 @@ export { dayReport, notionSync, readRecipePage, recipeFromJsonLd, mailDigest, re
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
-    if (!(env.TEAM_DOMAIN && env.ACCESS_AUD) && pwMode(env)) {
+    if (!(env.TEAM_DOMAIN && env.ACCESS_AUD) && (pwMode(env) || gLoginMode(env))) {
+      if (url.pathname === '/api/google/login' && req.method === 'GET') return googleLoginStart(env, url);
+      if (url.pathname === '/api/google/callback' && String(url.searchParams.get('state') || '').startsWith('L')) {
+        const r = await googleLoginFinish(req, env, url);
+        const h = new Headers({ 'cache-control': 'no-store', location: r.ok ? '/' : '/login?e=' + r.error });
+        h.append('set-cookie', 'gl_state=; Path=/api/google; Max-Age=0');
+        if (r.ok) { h.append('set-cookie', await newSession(env)); await delSetting(env, 'owner', 'login_fail'); }
+        return new Response(null, { status: 302, headers: h });
+      }
       if (url.pathname === '/login' && req.method === 'GET') {
-        return new Response(LOGIN_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...SEC } });
+        return new Response(loginPage(LOGIN_HTML, env, url), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...SEC } });
       }
       if (url.pathname === '/api/login' && req.method === 'POST') return crossSite(req, url) ? fail(403, 'Not allowed', 'bad_origin') : handleLogin(req, env);
       if (url.pathname === '/api/logout') {
